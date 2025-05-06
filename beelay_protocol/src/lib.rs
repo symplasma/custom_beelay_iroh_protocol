@@ -1,3 +1,5 @@
+mod beelay_network;
+
 use anyhow::Result;
 use iroh::{
     endpoint::Connection, protocol::ProtocolHandler,
