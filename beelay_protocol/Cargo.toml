@@ -13,3 +13,8 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 beelay-core = {git = "https://github.com/Zyell/keyhive.git", branch = "main", package = "beelay-core"}
 keyhive_core = {git = "https://github.com/Zyell/keyhive.git", branch = "main", package = "keyhive_core"}
 anyhow = "1.0.92"
+signature = "2.2.0"
+ed25519-dalek = "2.1.1"
+blake3 = "1.8.2"
+rand = "0.8.5"
+tracing = "0.1.41"

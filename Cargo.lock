@@ -240,12 +240,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "beelay-core",
+ "blake3",
+ "ed25519-dalek",
  "iroh",
  "keyhive_core",
  "n0-future",
  "postcard",
+ "rand 0.8.5",
  "serde",
+ "signature",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 
