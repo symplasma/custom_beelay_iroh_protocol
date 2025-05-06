@@ -6,7 +6,7 @@ use iroh::{
 };
 use n0_future::boxed::BoxFuture;
 
-const ALPN: &[u8] = b"beelay/1";
+pub const ALPN: &[u8] = b"beelay/1";
 
 #[derive(Debug, Clone)]
 pub struct IrohBeelayProtocol {}
@@ -19,7 +19,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
             println!("accepted connection from {node_id}");
 
             // Our protocol is a simple request-response protocol, so we expect the
-            // connecting peer to open a single bi-directional stream.
+            // connecting peer to open a single bidirectional stream.
             let (mut send, mut recv) = connection.accept_bi().await?;
 
             // Echo any bytes received back directly.
@@ -27,7 +27,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
             let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
             println!("Copied over {bytes_sent} byte(s)");
 
-            // By calling `finish` on the send stream we signal that we will not send anything
+            // By calling `finish` on the send stream, we signal that we will not send anything
             // further, which makes the receive stream on the other end terminate.
             send.finish()?;
 
@@ -40,8 +40,8 @@ impl ProtocolHandler for IrohBeelayProtocol {
     }
 }
 
-async fn start_accept_side() -> anyhow::Result<iroh::protocol::Router> {
-    let endpoint = iroh::Endpoint::builder().discovery_n0().bind().await?;
+pub async fn start_accept_side() -> Result<iroh::protocol::Router> {
+    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
 
     let router = iroh::protocol::Router::builder(endpoint)
         .accept(ALPN, IrohBeelayProtocol {}) // This makes the router handle incoming connections with our ALPN via Echo::accept!
@@ -51,7 +51,7 @@ async fn start_accept_side() -> anyhow::Result<iroh::protocol::Router> {
     Ok(router)
 }
 
-async fn connect_side(addr: NodeAddr) -> Result<()> {
+pub async fn connect_side(addr: NodeAddr) -> Result<()> {
     let endpoint = Endpoint::builder().discovery_n0().bind().await?;
 
     // Open a connection to the accepting node
@@ -66,7 +66,7 @@ async fn connect_side(addr: NodeAddr) -> Result<()> {
     // Signal the end of data for this particular stream
     send.finish()?;
 
-    // Receive the echo, but limit reading up to maximum 1000 bytes
+    // Receive the echo but limit reading up to a maximum of 1000 bytes
     let response = recv.read_to_end(1000).await?;
     assert_eq!(&response, b"Hello, world!");
 
@@ -76,7 +76,7 @@ async fn connect_side(addr: NodeAddr) -> Result<()> {
     // The above call only queues a close message to be sent (see how it's not async!).
     // We need to actually call this to make sure this message is sent out.
     endpoint.close().await;
-    // If we don't call this, but continue using the endpoint, we then the queued
+    // If we don't call this but continue using the endpoint, we then the queued
     // close call will eventually be picked up and sent.
     // But always try to wait for endpoint.close().await to go through before dropping
     // the endpoint to ensure any queued messages are sent through and connections are
