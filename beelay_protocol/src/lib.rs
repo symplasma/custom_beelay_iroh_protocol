@@ -1,4 +1,4 @@
-mod beelay_network;
+mod beelay;
 
 use anyhow::Result;
 use iroh::{
@@ -11,7 +11,9 @@ use n0_future::boxed::BoxFuture;
 pub const ALPN: &[u8] = b"beelay/1";
 
 #[derive(Debug, Clone)]
-pub struct IrohBeelayProtocol {}
+pub struct IrohBeelayProtocol {
+
+}
 
 impl ProtocolHandler for IrohBeelayProtocol {
     fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {

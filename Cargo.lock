@@ -251,7 +251,6 @@ dependencies = [
  "signature",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
