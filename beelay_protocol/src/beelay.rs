@@ -1,13 +1,72 @@
 use beelay_core::io::{IoAction, IoResult};
-use beelay_core::{conn_info, BundleSpec, CommandResult, CommitHash, DocumentId, Event, PeerId, StreamId, UnixTimestampMillis};
-use ed25519_dalek::SigningKey;
+use beelay_core::{conn_info, BundleSpec, CommandId, CommandResult, CommitHash, DocumentId, Event, OutboundRequestId, PeerId, StreamId, UnixTimestampMillis};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use signature::SignerMut;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use beelay_core::contact_card::ContactCard;
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
 use iroh::endpoint::{RecvStream, SendStream};
+use iroh::NodeId;
+use keyhive_core::crypto::verifiable::Verifiable;
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+struct IrohBeelayID(SigningKey);
+
+impl IrohBeelayID {
+    fn generate() -> Self {
+        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        Self(signing_key)
+    }
+    fn new(signing_key: SigningKey) -> Self {
+        Self(signing_key)
+    }
+
+    fn key(&self) -> &SigningKey {
+        &self.0
+    }
+    
+    fn verifying_key(&self) -> VerifyingKey {
+        self.0.verifying_key()
+    }
+}
+
+impl From<SigningKey> for IrohBeelayID {
+    fn from(value: SigningKey) -> Self {
+        Self(value)
+    }
+}
+
+impl From<IrohBeelayID> for NodeId {
+    fn from(value: IrohBeelayID) -> Self {
+        value.0.verifying_key().into()
+    }
+}
+
+impl From<IrohBeelayID> for PeerId {
+    fn from(value: IrohBeelayID) -> Self {
+        value.0.verifying_key().into()
+    }
+}
+
+pub enum EventData {
+    Event(Event),
+    RequestEvent(CommandId, Event, OutboundRequestId, PeerId),
+    ResponseEvent(CommandId, Event),
+    StreamEvent(StreamId, Event),
+}
+
+impl EventData {
+    fn into_event(self) -> Event {
+        match self {
+            EventData::Event(event) => event,
+            EventData::RequestEvent(command_id, event, _, _) => event,
+            EventData::ResponseEvent(command_id, event) => event,
+            EventData::StreamEvent(stream_id, event) => event,
+        }
+    }
+}
 
 pub struct StreamState {
     remote_peer: PeerId,
@@ -17,16 +76,17 @@ pub struct StreamState {
 enum Message {
     Request {
         target: PeerId,
-        senders_req_id: beelay_core::OutboundRequestId,
+        senders_req_id: OutboundRequestId,
         request: Vec<u8>,
     },
     Response {
         target: PeerId,
-        id: beelay_core::OutboundRequestId,
+        id: OutboundRequestId,
         response: Vec<u8>,
     },
     Stream {
         target: PeerId,
+        stream_id: StreamId,
         msg: Vec<u8>,
     },
 }
@@ -112,7 +172,7 @@ pub fn build_load_beelay_core(
         }
     };
     for result in completed_tasks {
-        inbox.push_back(Event::io_complete(result));
+        inbox.push_back(EventData::Event(Event::io_complete(result)));
     }
     let mut beelay_wrapper = BeelayWrapper::new(signing_key, nickname, beelay, storage, inbox);
     beelay_wrapper.handle_events();
@@ -132,16 +192,16 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
     core: beelay_core::Beelay<R>,
     outbox: Vec<Message>,
-    inbox: VecDeque<Event>,
+    inbox: VecDeque<EventData>,
     completed_commands:
-        HashMap<beelay_core::CommandId, Result<CommandResult, beelay_core::error::Stopping>>,
+        HashMap<CommandId, Result<CommandResult, beelay_core::error::Stopping>>,
     notifications: HashMap<DocumentId, Vec<beelay_core::doc_status::DocEvent>>,
     peer_changes: HashMap<PeerId, Vec<conn_info::ConnectionInfo>>,
-    handling_requests: HashMap<beelay_core::CommandId, (beelay_core::OutboundRequestId, PeerId)>,
+    handling_requests: HashMap<CommandId, (OutboundRequestId, PeerId)>,
     endpoints: HashMap<beelay_core::EndpointId, PeerId>,
     shutdown: bool,
-    streams: HashMap<beelay_core::StreamId, StreamState>,
-    starting_streams: HashMap<beelay_core::CommandId, StreamState>,
+    streams: HashMap<StreamId, StreamState>,
+    starting_streams: HashMap<CommandId, StreamState>,
     peer_connections: HashMap<PeerId, Connection>,
 }
 
@@ -151,7 +211,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         nickname: &str,
         core: beelay_core::Beelay<R>,
         storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
-        inbox: VecDeque<Event>,
+        inbox: VecDeque<EventData>,
     ) -> Self {
         Self {
             nickname: nickname.to_string(),
@@ -177,14 +237,22 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             return;
         }
         while let Some(event) = self.inbox.pop_front() {
+            let event = event.into_event();
             let now = UnixTimestampMillis::now();
             let results = self.core.handle_event(now, event).unwrap();
             for task in results.new_tasks.into_iter() {
                 let event = self.handle_task(task);
-                self.inbox.push_back(event);
+                self.inbox.push_back(EventData::Event(event));
             }
 
             for (command, result) in results.completed_commands.into_iter() {
+                if let Ok(CommandResult::CreateStream(stream_id)) = result {
+                    let target = self
+                        .starting_streams
+                        .remove(&command)
+                        .expect("should be a starting stream registered");
+                    self.streams.insert(stream_id, target);
+                }
                 if let Ok(CommandResult::HandleRequest(response)) = &result {
                     let Ok(response) = response else {
                         continue;
@@ -207,6 +275,25 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         senders_req_id: msg.id,
                         request: msg.request.encode(),
                     })
+                }
+            }
+            for (id, events) in results.new_stream_events {
+                for event in events {
+                    tracing::trace!(?event, "stream event");
+                    let StreamState {
+                        remote_peer: target,
+                        closed,
+                    } = self.streams.get(&id).unwrap();
+                    match event {
+                        beelay_core::StreamEvent::Send(msg) => self.outbox.push(Message::Stream {
+                            target: *target,
+                            stream_id: id,
+                            msg,
+                        }),
+                        beelay_core::StreamEvent::Close => {
+                            closed.store(true, Ordering::SeqCst);
+                        }
+                    }
                 }
             }
             for (doc_id, events) in results.notifications.into_iter() {
@@ -242,7 +329,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         let command = {
             let (command, event) =
                 Event::create_doc(initial_commit.clone(), other_owners);
-            self.inbox.push_back(event);
+            self.inbox.push_back(EventData::Event(event));
             self.handle_events();
             command
         };
@@ -260,7 +347,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
 
     pub fn contact_card(&mut self) -> Result<ContactCard, beelay_core::error::CreateContactCard> {
         let (command_id, event) = Event::create_contact_card();
-        self.inbox.push_back(event);
+        self.inbox.push_back(EventData::Event(event));
         self.run_until_quiescent();
 
         match self.completed_commands.remove(&command_id) {
@@ -279,7 +366,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         access: MemberAccess,
     ) {
         let (command_id, event) = beelay_core::Event::add_member_to_doc(doc, member, access);
-        self.inbox.push_back(event);
+        self.inbox.push_back(EventData::Event(event));
         self.run_until_quiescent();
         match self.completed_commands.remove(&command_id) {
             Some(Ok(beelay_core::CommandResult::Keyhive(
@@ -304,7 +391,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 closed,
             },
         );
-        self.inbox.push_back(event);
+        self.inbox.push_back(EventData::Event(event));
         self.handle_events();
         match self.completed_commands.remove(&command) {
             Some(Ok(CommandResult::CreateStream(stream_id))) => stream_id,
@@ -323,7 +410,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     ) -> Result<Vec<BundleSpec>, beelay_core::error::AddCommits> {
         let command = {
             let (command, event) = Event::add_commits(doc_id, commits);
-            self.inbox.push_back(event);
+            self.inbox.push_back(EventData::Event(event));
             command
         };
         self.run_until_quiescent();
@@ -339,7 +426,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn doc_status(&mut self, doc: &DocumentId) -> beelay_core::doc_status::DocStatus {
         let command = {
             let (command, event) = Event::query_status(*doc);
-            self.inbox.push_back(event);
+            self.inbox.push_back(EventData::Event(event));
             command
         };
         self.run_until_quiescent();
@@ -353,7 +440,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
 
     pub fn disconnect(&mut self, stream: StreamId) {
         let (command_id, event) = Event::disconnect_stream(stream);
-        self.inbox.push_back(event);
+        self.inbox.push_back(EventData::Event(event));
 
         self.handle_events();
 
@@ -362,34 +449,53 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         };
-        if let Some(StreamState {
-                        remote_peer: other_peer,
-                        ..
-                    }) = other_peer
-        {
-            //TODO: this needs to be passed to target over network
-            let other_beelay = self.network.beelays.get_mut(&other_peer).unwrap();
-            if let Some(other_stream_id) = other_beelay.streams.iter().find_map(
-                |(
-                     other_stream_id,
-                     StreamState {
-                         remote_peer: peer_id,
-                         ..
-                     },
-                 )| {
-                    if peer_id == &other_peer {
-                        Some(other_stream_id)
-                    } else {
-                        None
-                    }
-                },
-            ) {
-                let (_, evt) = Event::disconnect_stream(*other_stream_id);
-                other_beelay.inbox.push_back(evt);
-            }
-        }
+        // TODO: this is a mess, redo the tracking of streams so that we don't have to rely on reading other peer's state
+        // if let Some(StreamState {
+        //                 remote_peer: other_peer,
+        //                 ..
+        //             }) = other_peer
+        // {
+        //     //TODO: this needs to be passed to target over network
+        //     let other_beelay = self.network.beelays.get_mut(&other_peer).unwrap();
+        //     if let Some(other_stream_id) = other_beelay.streams.iter().find_map(
+        //         |(
+        //              other_stream_id,
+        //              StreamState {
+        //                  remote_peer: peer_id,
+        //                  ..
+        //              },
+        //          )| {
+        //             if peer_id == &other_peer {
+        //                 Some(other_stream_id)
+        //             } else {
+        //                 None
+        //             }
+        //         },
+        //     ) {
+        //         let (_, evt) = Event::disconnect_stream(*other_stream_id);
+        //         let event_data = EventData::Event(evt)
+        //         other_beelay.inbox.push_back(evt);
+        //     }
+        // }
 
         self.run_until_quiescent();
+    }
+
+    pub fn register_endpoint(&mut self, other: &PeerId) -> beelay_core::EndpointId {
+        let command = {
+            let (command, event) =
+                beelay_core::Event::register_endpoint(beelay_core::Audience::peer(other));
+            self.inbox.push_back(EventData::Event(event));
+            command
+        };
+        self.run_until_quiescent();
+        let endpoint_id = match self.completed_commands.remove(&command) {
+            Some(Ok(beelay_core::CommandResult::RegisterEndpoint(endpoint_id))) => endpoint_id,
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        };
+        self.endpoints.insert(endpoint_id, *other);
+        endpoint_id
     }
 
     pub fn run_until_quiescent(&mut self) {
@@ -407,54 +513,36 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         senders_req_id,
                         request,
                     } => {
-                        // TODO: send this over the network
-                        let target_beelay = self.beelays.get_mut(&target).unwrap();
                         let signed_message =
                             beelay_core::SignedMessage::decode(&request).unwrap();
                         let (command_id, event) =
-                            beelay_core::Event::handle_request(signed_message, None);
-                        target_beelay.inbox.push_back(event);
-                        target_beelay
-                            .handling_requests
-                            .insert(command_id, (senders_req_id, sender));
+                            Event::handle_request(signed_message, None);
+                        // TODO: send this event over to target peer
+                        let event_data = EventData::RequestEvent(command_id, event, senders_req_id, sender);
+                        let connection = self.peer_connections.get_mut(&target).expect("there must be a connection in this development phase");
+                        // connection.send should receive this event, command_id, sender, request_id
                     }
                     Message::Response {
                         target,
                         id,
                         response,
                     } => {
-                        // TODO: send this over the network
-                        let target = self.beelays.get_mut(&target).unwrap();
                         let response =
                             beelay_core::EndpointResponse::decode(&response).unwrap();
                         let (_command_id, event) =
                             Event::handle_response(id, response);
-                        target.inbox.push_back(event);
+                        //TODO: send this event ot target peer
+                        let event_data = EventData::Event(event);
+                        let connection = self.peer_connections.get_mut(&target).expect("there must be a connection in this development phase");
+                        // connection.send should receive this event
                     }
-                    Message::Stream { target, msg } => {
-                        // TODO: send this over the network
-                        let target_beelay = self.beelays.get_mut(&target).unwrap();
-                        let incoming_stream_id = target_beelay
-                            .streams
-                            .iter()
-                            .find_map(
-                                |(
-                                     stream,
-                                     StreamState {
-                                         remote_peer: peer, ..
-                                     },
-                                 )| {
-                                    if peer == sender {
-                                        Some(stream)
-                                    } else {
-                                        None
-                                    }
-                                },
-                            )
-                            .unwrap();
+                    Message::Stream { target, stream_id, msg } => {
+                        // TODO: send this over the network??
                         let event =
-                            beelay_core::Event::handle_message(*incoming_stream_id, msg);
-                        target_beelay.inbox.push_back(event);
+                            Event::handle_message(stream_id, msg);
+                        let event_data = EventData::StreamEvent(stream_id, event);
+                        let connection = self.peer_connections.get_mut(&target).expect("there must be a connection in this development phase");
+                        // connection.send should receive this event
                     }
                 }
             }
