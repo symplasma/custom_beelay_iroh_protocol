@@ -81,10 +81,7 @@
 use beelay_core::contact_card::ContactCard;
 use beelay_core::io::{IoAction, IoResult};
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
-use beelay_core::{
-    Beelay, BundleSpec, CommandId, CommandResult, CommitHash, Config, DocumentId, Event,
-    OutboundRequestId, PeerId, StreamId, UnixTimestampMillis, conn_info,
-};
+use beelay_core::{Beelay, BundleSpec, CommandId, CommandResult, CommitHash, Config, DocumentId, Event, OutboundRequestId, PeerId, StreamId, UnixTimestampMillis, conn_info, CommitOrBundle};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::NodeId;
 use iroh::endpoint::{RecvStream, SendStream, Source};
@@ -93,8 +90,10 @@ use rand::prelude::ThreadRng;
 use rand::thread_rng;
 use signature::SignerMut;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use n0_future::SinkExt;
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -184,11 +183,12 @@ enum Message {
 
 /// function handles beelay tasks related to storage, currently implemented only for Btree, but will be implemented for proper CRDT storage in the future
 fn handle_task(
-    storage: &mut BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+    storage: &mut Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>,
     signing_key: &mut SigningKey,
     task: beelay_core::io::IoTask,
 ) -> IoResult {
     let id = task.id();
+    let mut storage = storage.lock().expect("storage must be accessible");
     match task.take_action() {
         IoAction::Load { key } => {
             let data = storage.get(&key).cloned();
@@ -236,8 +236,9 @@ fn handle_task(
 struct BeelayBuilder {
     nickname: Option<String>,
     signing_key: Option<SigningKey>,
-    storage: Option<BTreeMap<beelay_core::StorageKey, Vec<u8>>>,
+    storage: Option<Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>>,
     core: Option<Arc<Mutex<Beelay<ThreadRng>>>>,
+    connections: Option<Arc<RwLock<HashMap<PeerId, Mutex<Connection>>>>>,
 }
 
 impl BeelayBuilder {
@@ -247,6 +248,7 @@ impl BeelayBuilder {
             signing_key: None,
             storage: None,
             core: None,
+            connections: None
         }
     }
 
@@ -262,9 +264,14 @@ impl BeelayBuilder {
 
     pub fn storage(
         mut self,
-        storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+        storage: Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>
     ) -> Self {
         self.storage = Some(storage);
+        self
+    }
+    
+    pub fn connections(mut self, connections: Arc<RwLock<HashMap<PeerId, Mutex<Connection>>>>) -> Self {
+        self.connections = Some(connections);
         self
     }
 
@@ -277,7 +284,7 @@ impl BeelayBuilder {
                 }
                 storage
             },
-            None => BTreeMap::new(),
+            None => Arc::new(Mutex::new(BTreeMap::new())),
         };
         let mut signing_key = self
             .signing_key
@@ -286,6 +293,7 @@ impl BeelayBuilder {
             let verifying_key = signing_key.verifying_key();
             hex::encode(verifying_key.as_bytes())
         });
+        let connections = self.connections.unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new())));
 
         let config = Config::new(thread_rng(), signing_key.verifying_key());
         let mut step = beelay_core::Beelay::load(config, UnixTimestampMillis::now());
@@ -324,6 +332,7 @@ impl BeelayBuilder {
             beelay,
             storage,
             inbox,
+            connections
         );
         beelay_wrapper.into()
     }
@@ -334,11 +343,25 @@ struct Connection {
     recv: RecvStream,
 }
 
+
+// TODO: we should send messages to an actor to handle Beelay state management and connections 
+//  instead of locking, this will limit the need for both locks
+#[derive(Clone)]
 struct BeelayContext<R: rand::Rng + rand::CryptoRng> {
     nickname: String,
     signing_key: SigningKey,
     core: Arc<Mutex<Beelay<R>>>,
-    storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+    storage: Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>,
+    connections: Arc<RwLock<HashMap<PeerId, Mutex<Connection>>>>,
+}
+
+impl<R: rand::Rng + rand::CryptoRng> Debug for BeelayContext<R> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BeelayContext")
+            .field("nickname", &self.nickname)
+            .field("peer_id", &self.peer_id())
+            .finish()
+    }
 }
 
 impl<R: rand::Rng + rand::CryptoRng> BeelayContext<R> {
@@ -346,13 +369,15 @@ impl<R: rand::Rng + rand::CryptoRng> BeelayContext<R> {
         nickname: String,
         signing_key: SigningKey,
         core: Arc<Mutex<Beelay<R>>>,
-        storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+        storage: Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>,
+        connections: Arc<RwLock<HashMap<PeerId, Mutex<Connection>>>>,
     ) -> Self {
         Self {
             nickname,
             signing_key,
             core,
             storage,
+            connections,
         }
     }
 
@@ -368,6 +393,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> From<BeelayWrapper<R>> fo
             signing_key: value.signing_key,
             core: value.core,
             storage: value.storage,
+            connections: value.connections
         }
     }
 }
@@ -375,8 +401,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> From<BeelayWrapper<R>> fo
 pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     nickname: String,
     signing_key: SigningKey,
-    storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
-    core: Arc<Mutex<beelay_core::Beelay<R>>>,
+    storage: Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>,
+    core: Arc<Mutex<Beelay<R>>>,
 
     outbox: Vec<Message>,
     inbox: VecDeque<EventData>,
@@ -394,7 +420,7 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     streams: HashMap<StreamId, StreamState>,
     starting_streams: HashMap<CommandId, StreamState>,
 
-    peer_connections: HashMap<PeerId, Connection>,
+    connections: Arc<RwLock<HashMap<PeerId, Mutex<Connection>>>>,
 }
 
 impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
@@ -402,8 +428,9 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         signing_key: SigningKey,
         nickname: &str,
         core: Beelay<R>,
-        storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+        storage: Arc<Mutex<BTreeMap<beelay_core::StorageKey, Vec<u8>>>>,
         inbox: VecDeque<EventData>,
+        connections: Arc<RwLock<HashMap<PeerId, Mutex<Connection>>>>
     ) -> BeelayWrapper<R> {
         let mut beelay_wrapper = Self {
             nickname: nickname.to_string(),
@@ -420,7 +447,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             shutdown: false,
             streams: HashMap::new(),
             starting_streams: HashMap::new(),
-            peer_connections: HashMap::new(),
+            connections,
         };
 
         beelay_wrapper.handle_events();
@@ -431,8 +458,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         Self {
             nickname: beelay_context.nickname,
             signing_key: beelay_context.signing_key,
-            storage: beelay_context.storage.clone(), // TODO: fix this to be a truly shareable storage
-            core: beelay_context.core,
+            storage: beelay_context.storage.clone(),
+            core: beelay_context.core.clone(),
             outbox: Vec::new(),
             inbox: VecDeque::new(),
             completed_commands: HashMap::new(),
@@ -443,7 +470,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             shutdown: false,
             streams: HashMap::new(),
             starting_streams: HashMap::new(),
-            peer_connections: HashMap::new(),
+            connections: beelay_context.connections.clone(),
         }
     }
 
@@ -571,6 +598,20 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 let doc_id = doc_id?;
                 Ok((doc_id, initial_commit))
             }
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        }
+    }
+
+    pub fn load_doc(&mut self, doc_id: DocumentId) -> Option<Vec<CommitOrBundle>> {
+        let command = {
+            let (command, event) = Event::load_doc(doc_id);
+            self.inbox.push_back(EventData::Event(event));
+            command
+        };
+        self.run_until_quiescent();
+        match self.completed_commands.remove(&command) {
+            Some(Ok(beelay_core::CommandResult::LoadDoc(commits))) => commits,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
@@ -754,10 +795,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         // TODO: send this event over to target peer
                         let event_data =
                             EventData::RequestEvent(command_id, event, senders_req_id, sender);
-                        let connection = self
-                            .peer_connections
-                            .get_mut(&target)
-                            .expect("there must be a connection in this development phase");
+                        {
+                            let mut read_guard = self.connections.read().expect("we must have a connection map in this development phase");
+                            let value_guard = read_guard.get(&target).expect("there must be a connection in this development phase");
+                            let mut connection = value_guard.lock().expect("we must have a connection in this development phase");
+                            let buffer = "bob".as_bytes();
+                            connection.send.write(buffer);
+                        }
                         // connection.send should receive this event, command_id, sender, request_id
                     }
                     Message::Response {
@@ -770,10 +814,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         let (_command_id, event) = Event::handle_response(id, response);
                         //TODO: send this event ot target peer
                         let event_data = EventData::Event(event);
-                        let connection = self
-                            .peer_connections
-                            .get_mut(&target)
-                            .expect("there must be a connection in this development phase");
+                        {
+                            let mut read_guard = self.connections.read().expect("we must have a connection map in this development phase");
+                            let value_guard = read_guard.get(&target).expect("there must be a connection in this development phase");
+                            let mut connection = value_guard.lock().expect("we must have a connection in this development phase");
+                            let buffer = "bob".as_bytes();
+                            connection.send.write(buffer);
+                        }
                         // connection.send should receive this event
                     }
                     Message::Stream {
@@ -786,10 +833,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         // TODO: send this over the network??
                         let event = Event::handle_message(stream_id_source, msg);
                         let event_data = EventData::StreamEvent(stream_id_source, event);
-                        let connection = self
-                            .peer_connections
-                            .get_mut(&target)
-                            .expect("there must be a connection in this development phase");
+                        {
+                            let mut read_guard = self.connections.read().expect("we must have a connection map in this development phase");
+                            let value_guard = read_guard.get(&target).expect("there must be a connection in this development phase");
+                            let mut connection = value_guard.lock().expect("we must have a connection in this development phase");
+                            let buffer = "bob".as_bytes();
+                            connection.send.write(buffer);
+                        }
                         // connection.send should receive this event
                     }
                 }
@@ -801,11 +851,17 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
+    use tokio::task;
+
+    fn build_beelay_context(nickname: &str) -> BeelayContext<ThreadRng> {
+        BeelayBuilder::new()
+            .nickname(nickname.to_string())
+            .build()
+    }
 
     fn build_beelay_wrapper(nickname: &str) -> BeelayWrapper<ThreadRng> {
-        let beelay_context = BeelayBuilder::new()
-            .nickname(nickname.to_string())
-            .build();
+        let beelay_context = build_beelay_context(nickname);
         BeelayWrapper::new(beelay_context)
     }
     
@@ -879,5 +935,41 @@ mod tests {
             wrapper.peer_changes.is_empty(),
             "No peer changes should be present initially"
         );
+    }
+
+    #[tokio::test]
+    async fn test_beelay_wrapper_same_peer_different_wrapper_instances() {
+        let (tx, mut rx) = mpsc::channel(100);
+
+        // Create shared context
+        let context = build_beelay_context("shared_context");
+
+        // Create first wrapper from context
+        let mut wrapper1 = BeelayWrapper::new(context.clone());
+
+        // Spawn second wrapper in separate task
+        let handle = task::spawn(async move {
+            let mut wrapper2 = BeelayWrapper::new(context);
+
+            // Wait for signal that doc was created
+            while let Some((doc_id, commit)) = rx.recv().await {
+                // Verify storage has new commit
+                let commits = wrapper2.load_doc(doc_id).unwrap();
+                assert!(commits.contains(&commit), "Storage should contain new commits");
+                break;
+            }
+        });
+
+        // Create document in first wrapper
+        let content = b"test content".to_vec();
+        let other_owners = vec![];
+        let (doc_id, commit) = wrapper1.create_doc_with_contents(content, other_owners).unwrap();
+
+        // Signal other thread that doc was created
+        // let bob = tx.send((doc_id, CommitOrBundle::Commit(commit));
+        
+
+        // Wait for other thread to complete
+        handle.await.unwrap();
     }
 }
