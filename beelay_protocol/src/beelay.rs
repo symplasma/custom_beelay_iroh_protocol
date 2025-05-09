@@ -1,15 +1,17 @@
 use beelay_core::io::{IoAction, IoResult};
-use beelay_core::{conn_info, BundleSpec, CommandId, CommandResult, CommitHash, DocumentId, Event, OutboundRequestId, PeerId, StreamId, UnixTimestampMillis};
+use beelay_core::{conn_info, Beelay, BundleSpec, CommandId, CommandResult, CommitHash, Config, DocumentId, Event, OutboundRequestId, PeerId, StreamId, UnixTimestampMillis};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use signature::SignerMut;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use beelay_core::contact_card::ContactCard;
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
-use iroh::endpoint::{RecvStream, SendStream};
+use iroh::endpoint::{RecvStream, SendStream, Source};
 use iroh::NodeId;
 use keyhive_core::crypto::verifiable::Verifiable;
+use rand::prelude::ThreadRng;
+use rand::thread_rng;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 struct IrohBeelayID(SigningKey);
@@ -26,7 +28,7 @@ impl IrohBeelayID {
     fn key(&self) -> &SigningKey {
         &self.0
     }
-    
+
     fn verifying_key(&self) -> VerifyingKey {
         self.0.verifying_key()
     }
@@ -53,7 +55,6 @@ impl From<IrohBeelayID> for PeerId {
 pub enum EventData {
     Event(Event),
     RequestEvent(CommandId, Event, OutboundRequestId, PeerId),
-    ResponseEvent(CommandId, Event),
     StreamEvent(StreamId, Event),
 }
 
@@ -62,7 +63,6 @@ impl EventData {
         match self {
             EventData::Event(event) => event,
             EventData::RequestEvent(command_id, event, _, _) => event,
-            EventData::ResponseEvent(command_id, event) => event,
             EventData::StreamEvent(stream_id, event) => event,
         }
     }
@@ -75,18 +75,22 @@ pub struct StreamState {
 
 enum Message {
     Request {
+        source: PeerId,
         target: PeerId,
         senders_req_id: OutboundRequestId,
         request: Vec<u8>,
     },
     Response {
+        source: PeerId,
         target: PeerId,
         id: OutboundRequestId,
         response: Vec<u8>,
     },
     Stream {
+        source: PeerId,
         target: PeerId,
-        stream_id: StreamId,
+        stream_id_source: StreamId,
+        stream_id_target: Option<StreamId>,
         msg: Vec<u8>,
     },
 }
@@ -139,12 +143,107 @@ fn handle_task(
     }
 }
 
+
+struct BeelayBuilder {
+    nickname: Option<String>,
+    signing_key: Option<SigningKey>,
+    storage: Option<BTreeMap<beelay_core::StorageKey, Vec<u8>>>,
+    core: Option<Arc<Mutex<Beelay<ThreadRng>>>>,
+}
+
+impl BeelayBuilder {
+    pub fn new() -> Self {
+        Self {
+            nickname: None,
+            signing_key: None,
+            storage: None,
+            core: None,
+        }
+    }
+
+    pub fn nickname(mut self, nickname: String) -> Self {
+        self.nickname = Some(nickname);
+        self
+    }
+
+    pub fn signing_key(mut self, signing_key: SigningKey) -> Self {
+        self.signing_key = Some(signing_key);
+        self
+    }
+
+    pub fn core_storage_key(mut self, 
+                            core: Arc<Mutex<Beelay<ThreadRng>>>, 
+                            storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+                            signing_key: SigningKey) -> Self {
+        self.core = Some(core);
+        self.storage = Some(storage);
+        self.signing_key = Some(signing_key);
+        self
+    }
+
+    fn build(self) -> BeelayContext<ThreadRng> {
+        let mut signing_key = self.signing_key.unwrap_or_else(|| {
+            SigningKey::generate(&mut thread_rng())
+        });
+        let nickname = self.nickname.unwrap_or_else(|| {
+            let verifying_key = signing_key.verifying_key();
+            hex::encode(verifying_key.as_bytes())
+        });
+        if let (Some(core), Some(storage)) =  (self.core, self.storage) {
+            let peer_id = PeerId::from(signing_key.verifying_key());
+            BeelayContext {
+                nickname,
+                signing_key,
+                peer_id,
+                core,
+                storage,
+            }
+        } else {
+            let config = Config::new(thread_rng(), signing_key.verifying_key());
+            let mut step = beelay_core::Beelay::load(config, UnixTimestampMillis::now());
+            let mut completed_tasks = Vec::new();
+            let mut inbox = VecDeque::new();
+            let mut storage = BTreeMap::new();
+            let beelay = loop {
+                match step {
+                    beelay_core::loading::Step::Loading(loading, io_tasks) => {
+                        for task in io_tasks {
+                            let result = handle_task(&mut storage, &mut signing_key, task);
+                            completed_tasks.push(result);
+                        }
+                        if let Some(task_result) = completed_tasks.pop() {
+                            step = loading.handle_io_complete(UnixTimestampMillis::now(), task_result);
+                            continue;
+                        } else {
+                            panic!("no tasks completed but still loading");
+                        }
+                    }
+                    beelay_core::loading::Step::Loaded(beelay, io_tasks) => {
+                        for task in io_tasks {
+                            let result = handle_task(&mut storage, &mut signing_key, task);
+                            completed_tasks.push(result);
+                        }
+                        break beelay;
+                    }
+                }
+            };
+            for result in completed_tasks {
+                inbox.push_back(EventData::Event(Event::io_complete(result)));
+            }
+            let beelay_context = BeelayWrapper::generate_primed_beelay(signing_key, &*nickname, beelay, storage, inbox);
+            beelay_context
+        }
+    }
+
+}
+
+
 pub fn build_load_beelay_core(
     nickname: &str,
-    config: beelay_core::Config<rand::rngs::ThreadRng>,
+    config: Config<ThreadRng>,
     mut signing_key: SigningKey,
-) -> BeelayWrapper<rand::rngs::ThreadRng> {
-    let mut step = beelay_core::Beelay::load(config, UnixTimestampMillis::now());
+) -> BeelayContext<ThreadRng> {
+    let mut step = Beelay::load(config, UnixTimestampMillis::now());
     let mut completed_tasks = Vec::new();
     let mut inbox = VecDeque::new();
     let mut storage = BTreeMap::new();
@@ -174,11 +273,9 @@ pub fn build_load_beelay_core(
     for result in completed_tasks {
         inbox.push_back(EventData::Event(Event::io_complete(result)));
     }
-    let mut beelay_wrapper = BeelayWrapper::new(signing_key, nickname, beelay, storage, inbox);
-    beelay_wrapper.handle_events();
-    beelay_wrapper.run_until_quiescent();
+    let beelay_context = BeelayWrapper::generate_primed_beelay(signing_key, nickname, beelay, storage, inbox);
     tracing::info!("loading complete");
-    beelay_wrapper
+    beelay_context
 }
 
 struct Connection {
@@ -186,40 +283,91 @@ struct Connection {
     recv: RecvStream
 }
 
+struct BeelayContext<R: rand::Rng + rand::CryptoRng> {
+    nickname: String,
+    signing_key: SigningKey,
+    peer_id: PeerId,
+    core: Arc<Mutex<beelay_core::Beelay<R>>>,
+    storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>
+}
+
 pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     nickname: String,
     signing_key: SigningKey,
+    peer_id: PeerId,
     storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
-    core: beelay_core::Beelay<R>,
+    core: Arc<Mutex<beelay_core::Beelay<R>>>,
+
     outbox: Vec<Message>,
     inbox: VecDeque<EventData>,
+
     completed_commands:
         HashMap<CommandId, Result<CommandResult, beelay_core::error::Stopping>>,
+
     notifications: HashMap<DocumentId, Vec<beelay_core::doc_status::DocEvent>>,
     peer_changes: HashMap<PeerId, Vec<conn_info::ConnectionInfo>>,
+
     handling_requests: HashMap<CommandId, (OutboundRequestId, PeerId)>,
     endpoints: HashMap<beelay_core::EndpointId, PeerId>,
+
     shutdown: bool,
+
     streams: HashMap<StreamId, StreamState>,
     starting_streams: HashMap<CommandId, StreamState>,
+
     peer_connections: HashMap<PeerId, Connection>,
 }
 
 impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
-    fn new(
+    fn generate_primed_beelay(
         signing_key: SigningKey,
         nickname: &str,
         core: beelay_core::Beelay<R>,
         storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
         inbox: VecDeque<EventData>,
-    ) -> Self {
-        Self {
+    ) -> BeelayContext<R> {
+        let peer_id = PeerId::from(signing_key.verifying_key());
+        let mut beelay_wrapper = Self {
             nickname: nickname.to_string(),
             signing_key,
+            peer_id,
             storage,
-            core,
+            core: Arc::new(Mutex::new(core)),
             outbox: Vec::new(),
             inbox,
+            completed_commands: HashMap::new(),
+            notifications: HashMap::new(),
+            peer_changes: HashMap::new(),
+            handling_requests: HashMap::new(),
+            endpoints: HashMap::new(),
+            shutdown: false,
+            streams: HashMap::new(),
+            starting_streams: HashMap::new(),
+            peer_connections: HashMap::new(),
+        };
+        
+        beelay_wrapper.handle_events();
+
+        BeelayContext {
+            nickname: beelay_wrapper.nickname,
+            signing_key: beelay_wrapper.signing_key,
+            peer_id: beelay_wrapper.peer_id,
+            core: beelay_wrapper.core,
+            storage: beelay_wrapper.storage
+        }
+    }
+
+    fn new(
+        beelay_context: BeelayContext<R>
+    ) -> Self {
+        Self {
+            nickname: beelay_context.nickname,
+            signing_key: beelay_context.signing_key,
+            peer_id: beelay_context.peer_id,
+            storage: beelay_context.storage.clone(),  // TODO: fix this to be a truly shareable storage
+            core: beelay_context.core,
+            outbox: Vec::new(),
+            inbox: VecDeque::new(),
             completed_commands: HashMap::new(),
             notifications: HashMap::new(),
             peer_changes: HashMap::new(),
@@ -232,6 +380,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         }
     }
 
+
     pub fn handle_events(&mut self) {
         if self.shutdown {
             return;
@@ -239,7 +388,10 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         while let Some(event) = self.inbox.pop_front() {
             let event = event.into_event();
             let now = UnixTimestampMillis::now();
-            let results = self.core.handle_event(now, event).unwrap();
+            let results = {
+                let mut core = self.core.lock().expect("beelay lock");
+                 core.handle_event(now, event).expect("the stop should be controlled")
+            };
             for task in results.new_tasks.into_iter() {
                 let event = self.handle_task(task);
                 self.inbox.push_back(EventData::Event(event));
@@ -259,6 +411,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     };
                     if let Some((sender_req_id, sender)) = self.handling_requests.remove(&command) {
                         self.outbox.push(Message::Response {
+                            source: self.peer_id,
                             target: sender,
                             id: sender_req_id,
                             response: response.encode(),
@@ -271,6 +424,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 let peer_id = self.endpoints.get(&target).expect("endpoint doesn't exist");
                 for msg in msgs {
                     self.outbox.push(Message::Request {
+                        source: self.peer_id,
                         target: *peer_id,
                         senders_req_id: msg.id,
                         request: msg.request.encode(),
@@ -286,8 +440,10 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     } = self.streams.get(&id).unwrap();
                     match event {
                         beelay_core::StreamEvent::Send(msg) => self.outbox.push(Message::Stream {
+                            source: self.peer_id,
                             target: *target,
-                            stream_id: id,
+                            stream_id_source: id,
+                            stream_id_target: None,
                             msg,
                         }),
                         beelay_core::StreamEvent::Close => {
@@ -333,8 +489,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             self.handle_events();
             command
         };
+
+        // Doc is created at this point with io tasks handled.  We now have some events to deal with
+        // across the network that may yield additional events to complete
+        // this action in its entirety.
+
         self.run_until_quiescent();
-        
+
         match self.completed_commands.remove(&command) {
             Some(Ok(CommandResult::CreateDoc(doc_id))) => {
                 let doc_id = doc_id?;
@@ -430,7 +591,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             command
         };
         self.run_until_quiescent();
-        
+
         match self.completed_commands.remove(&command) {
             Some(Ok(CommandResult::QueryStatus(status))) => status,
             Some(other) => panic!("unexpected command result: {:?}", other),
@@ -502,13 +663,20 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         loop {
             self.handle_events();
             if self.outbox.is_empty() {
+                // no actions to take on the network
                 break;
             }
             let sender = self.core.peer_id();
             let outbox = std::mem::take(&mut self.outbox);
+            // All messages in the outbox must be processed into an event we can send
+            // across the network.
+            // We want to decouple the receiving of any responses from the network into an active
+            // listening task that can inject them back into this state machine and respond to
+            // whatever the original command was
             for msg in outbox.into_iter() {
                 match msg {
                     Message::Request {
+                        source,
                         target,
                         senders_req_id,
                         request,
@@ -523,6 +691,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         // connection.send should receive this event, command_id, sender, request_id
                     }
                     Message::Response {
+                        source,
                         target,
                         id,
                         response,
@@ -536,11 +705,16 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         let connection = self.peer_connections.get_mut(&target).expect("there must be a connection in this development phase");
                         // connection.send should receive this event
                     }
-                    Message::Stream { target, stream_id, msg } => {
+                    Message::Stream {
+                        source,
+                        target,
+                        stream_id_source,
+                        stream_id_target,
+                        msg } => {
                         // TODO: send this over the network??
                         let event =
-                            Event::handle_message(stream_id, msg);
-                        let event_data = EventData::StreamEvent(stream_id, event);
+                            Event::handle_message(stream_id_source, msg);
+                        let event_data = EventData::StreamEvent(stream_id_source, event);
                         let connection = self.peer_connections.get_mut(&target).expect("there must be a connection in this development phase");
                         // connection.send should receive this event
                     }
