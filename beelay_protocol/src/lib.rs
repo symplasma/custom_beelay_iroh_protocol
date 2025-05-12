@@ -12,7 +12,7 @@ pub const ALPN: &[u8] = b"beelay/1";
 
 #[derive(Debug, Clone)]
 pub struct IrohBeelayProtocol {
-
+    
 }
 
 impl ProtocolHandler for IrohBeelayProtocol {
