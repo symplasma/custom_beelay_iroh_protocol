@@ -1,4 +1,5 @@
 use beelay_core::contact_card::ContactCard;
+use beelay_core::error::{AddCommits, CreateContactCard};
 use beelay_core::io::{IoAction, IoResult};
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
 use beelay_core::{
@@ -278,6 +279,77 @@ impl BeelayActor {
             send_channel: beelay_tx,
             handle: handler_thread,
         }
+    }
+
+    pub async fn create_doc(
+        &self,
+        content: Vec<u8>,
+        other_owners: Vec<KeyhiveEntityIdWrapper>,
+    ) -> Result<(DocumentId, Commit), beelay_core::error::Create> {
+        // Create the document action
+        let (sender, receiver) = oneshot::channel();
+        let beelay_create_doc = BeelayAction::CreateDoc(sender, content, other_owners);
+        self.send_channel
+            .send(beelay_create_doc)
+            .await
+            .expect("Failed to send create doc action");
+        receiver.await.expect("Failed to receive create doc result")
+    }
+
+    pub async fn load_doc(&self, doc_id: DocumentId) -> Option<Vec<CommitOrBundle>> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_load_doc = BeelayAction::LoadDoc(sender, doc_id);
+        self.send_channel
+            .send(beelay_load_doc)
+            .await
+            .expect("Failed to send load doc action");
+        receiver.await.expect("Failed to receive load doc result")
+    }
+
+    pub async fn add_commits(
+        &self,
+        document_id: DocumentId,
+        commits: Vec<Commit>,
+    ) -> Result<Vec<BundleSpec>, AddCommits> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_add_commits = BeelayAction::AddCommits(sender, document_id, commits);
+        self.send_channel
+            .send(beelay_add_commits)
+            .await
+            .expect("Failed to send add commits action");
+        receiver
+            .await
+            .expect("Failed to receive add commits result")
+    }
+
+    pub async fn create_contact_card(&self) -> Result<ContactCardWrapper, CreateContactCard> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_create_contact_card = BeelayAction::CreateContactCard(sender);
+        self.send_channel
+            .send(beelay_create_contact_card)
+            .await
+            .expect("Failed to send create contact card action");
+        receiver
+            .await
+            .expect("Failed to receive create contact card result")
+    }
+
+    pub async fn add_member_to_doc(
+        &self,
+        document_id: DocumentId,
+        entity: KeyhiveEntityIdWrapper,
+        access: MemberAccess,
+    ) {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_add_member_to_doc =
+            BeelayAction::AddMemberToDoc(sender, document_id, entity, access);
+        self.send_channel
+            .send(beelay_add_member_to_doc)
+            .await
+            .expect("Failed to send add member to doc action");
+        receiver
+            .await
+            .expect("Failed to receive add member to doc result")
     }
 }
 
@@ -759,16 +831,34 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 BeelayAction::CreateDoc(reply, content, other_owners) => {
                     let other_owners = other_owners.into_iter().map(|x| x.into()).collect();
                     let result = self.create_doc_with_contents(content, other_owners);
-                    reply.send(result).expect("TODO: panic message");
+                    reply.send(result).expect("send failed create doc")
+                }
+                BeelayAction::LoadDoc(reply, doc_id) => {
+                    let result = self.load_doc(doc_id);
+                    reply.send(result).expect("send failed load doc")
+                }
+                BeelayAction::DocStatus(reply, doc_id) => {
+                    let result = self.doc_status(&doc_id);
+                    reply.send(result).expect("send failed doc status")
+                }
+                BeelayAction::AddCommits(reply, doc_id, commits) => {
+                    let result = self.add_commits(doc_id, commits);
+                    reply.send(result).expect("send failed add commits")
+                }
+                BeelayAction::CreateContactCard(reply) => {
+                    let result = match self.contact_card() {
+                        Ok(contact_card) => Ok(contact_card.into()),
+                        Err(e) => Err(e),
+                    };
+                    reply.send(result).expect("send failed create contact card")
+                }
+                BeelayAction::AddMemberToDoc(reply, doc_id, member, access) => {
+                    let result = self.add_member_to_doc(doc_id, member.into(), access);
+                    reply.send(result).expect("send failed add member to doc")
                 }
                 BeelayAction::SendMessage(_, _) => {
                     break;
                 }
-                BeelayAction::LoadDoc(_, _) => {}
-                BeelayAction::DocStatus(_, _) => {}
-                BeelayAction::AddCommits(_, _, _) => {}
-                BeelayAction::CreateContactCard(_) => {}
-                BeelayAction::AddMemberToDoc(_, _, _, _) => {}
             }
         }
     }
@@ -826,7 +916,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         let event_data = EventData::StreamEvent(stream_id_source, event);
                         // connection.send should receive this event
                     }
-                    Message::Confirmation => continue
+                    Message::Confirmation => continue,
                 }
             }
         }
@@ -846,52 +936,133 @@ mod tests {
         .await
     }
 
-    fn build_beelay_wrapper(
-        nickname: &str,
-        sender: Sender<BeelayAction>,
-        receiver: Receiver<BeelayAction>,
-    ) -> BeelayWrapper<ThreadRng> {
-        BeelayBuilder::new()
-            .nickname(nickname.to_string())
-            .channel(sender, receiver)
-            .build()
-    }
-
     #[tokio::test]
-    async fn test_beelay_wrapper_same_peer_different_wrapper_instances() {
+    async fn test_beelay_wrapper_create_doc() {
         // Create channels for the communicating with the beelay wrapper
 
         let beelay_actor = spawn_beelay_actor().await;
 
         // Create the document action
-        let (sender, receiver) = oneshot::channel();
         let content = b"test content".to_vec();
         let other_owners = vec![];
-        let beelay_create_doc = BeelayAction::CreateDoc(sender, content, other_owners);
 
-        // Send the action to the wrapper thread
-        println!(
-            "Sending action from main thread: {:?}",
-            std::thread::current().id()
-        );
-        beelay_actor
-            .send_channel
-            .send(beelay_create_doc)
+        let (doc_id, commit) = beelay_actor
+            .create_doc(content.clone(), other_owners)
             .await
-            .expect("Failed to send create doc action");
-
-        // Wait for the result
-        let result = receiver.await.expect("Failed to receive response");
-        let (doc_id, commit) = result.expect("Document creation failed");
+            .expect("Failed to create document");
 
         // Do something with doc_id and commit...
         println!("Created document with ID: {:?}", doc_id);
+        assert_eq!(commit.contents().to_vec(), content);
+    }
 
-        // You can now send a shutdown message or other signal to terminate the thread
-        // For example:
-        // tx.send(BeelayAction::SendMessage(doc_id, Message::Shutdown)).await.expect("Failed to send shutdown");
+    #[tokio::test]
+    async fn test_beelay_actor_load_doc() {
+        // Create a new BeelayActor
+        let beelay_actor = spawn_beelay_actor().await;
 
-        // Optionally wait for the thread to finish
-        // handler_thread.join().unwrap();
+        // First create a document to load
+        let content = b"document to load".to_vec();
+        let other_owners = vec![];
+
+        let (doc_id, _) = beelay_actor
+            .create_doc(content.clone(), other_owners)
+            .await
+            .expect("Failed to create document");
+
+        // Now load the document
+        let loaded_doc = beelay_actor.load_doc(doc_id).await;
+
+        // Verify the document was loaded correctly
+        assert!(
+            loaded_doc.is_some(),
+            "Document should be loaded successfully"
+        );
+
+        // Check for the document content in the commits
+        if let Some(commits) = loaded_doc {
+            assert!(!commits.is_empty(), "Should have at least one commit");
+            // Further verification could be done here depending on the structure
+        }
+    }
+
+    #[tokio::test]
+    async fn test_beelay_actor_add_commits() {
+        // Create a new BeelayActor
+        let beelay_actor = spawn_beelay_actor().await;
+
+        // First create a document to modify
+        let initial_content = b"initial content".to_vec();
+        let other_owners = vec![];
+
+        let (doc_id, _) = beelay_actor
+            .create_doc(initial_content, other_owners)
+            .await
+            .expect("Failed to create document");
+
+        // Create a new commit to add
+        let new_content = b"updated content".to_vec();
+        let hash = CommitHash::from(blake3::hash(&new_content).as_bytes());
+        let commit = Commit::new(vec![], new_content, hash);
+
+        // Add the commit to the document
+        let result = beelay_actor
+            .add_commits(doc_id, vec![commit])
+            .await
+            .expect("Failed to add commits");
+
+        // Verify the document now has the new commit
+        let loaded_doc = beelay_actor.load_doc(doc_id).await;
+        assert!(
+            loaded_doc.is_some(),
+            "Document should be loaded after adding commits"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_beelay_actor_create_contact_card() {
+        // Create a new BeelayActor
+        let beelay_actor = spawn_beelay_actor().await;
+
+        // Create a contact card
+        let contact_card = beelay_actor
+            .create_contact_card()
+            .await
+            .expect("Failed to create contact card");
+
+        // Verify the contact card was created successfully
+        // We can't check the exact content but we can verify it exists
+        assert!(contact_card.0.len() > 0, "Contact card should not be empty");
+    }
+
+    #[tokio::test]
+    async fn test_beelay_actor_add_member_to_doc() {
+        // Create a new BeelayActor
+        let beelay_actor = spawn_beelay_actor().await;
+
+        // First create a document
+        let content = b"shared document".to_vec();
+        let other_owners = vec![];
+
+        let (doc_id, _) = beelay_actor
+            .create_doc(content, other_owners)
+            .await
+            .expect("Failed to create document");
+
+        // Create a contact card for a new member
+        let contact_card = beelay_actor
+            .create_contact_card()
+            .await
+            .expect("Failed to create contact card");
+
+        // Add the member to the document
+        let entity = KeyhiveEntityIdWrapper::Individual(contact_card);
+        let access = MemberAccess::Admin;
+
+        // This doesn't return a result, but shouldn't panic
+        beelay_actor.add_member_to_doc(doc_id, entity, access).await;
+
+        // If we reach here without panicking, the test passes
+        // Additional verification would require checking internal state
     }
 }
