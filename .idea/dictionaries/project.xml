@@ -2,6 +2,7 @@
   <dictionary name="project">
     <words>
       <w>beelay</w>
+      <w>crdt</w>
     </words>
   </dictionary>
 </component>
