@@ -2,10 +2,14 @@ use beelay_core::contact_card::ContactCard;
 use beelay_core::error::{AddCommits, CreateContactCard};
 use beelay_core::io::{IoAction, IoResult};
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
-use beelay_core::{Beelay, BundleSpec, CommandId, CommandResult, Commit, CommitHash, CommitOrBundle, Config, DocumentId, Event, OutboundRequestId, PeerId, StreamId, UnixTimestampMillis, conn_info, StreamDirection};
+use beelay_core::{
+    Beelay, BundleSpec, CommandId, CommandResult, Commit, CommitHash, CommitOrBundle, Config,
+    DocumentId, Event, OutboundRequestId, PeerId, StreamDirection, StreamId, UnixTimestampMillis,
+    conn_info,
+};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use iroh::{NodeId, SecretKey};
 use iroh::endpoint::{RecvStream, SendStream, Source};
+use iroh::{NodeId, SecretKey};
 use keyhive_core::crypto::verifiable::Verifiable;
 use keyhive_core::principal::peer::Peer;
 use n0_future::SinkExt;
@@ -21,6 +25,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+pub type BeelayStorage = BTreeMap<beelay_core::StorageKey, Vec<u8>>;
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -94,7 +100,7 @@ impl EventData {
 
 /// Messages are used to send data over Iroh connections and reconcile Beelay commands that must be sent to other peers.
 #[derive(Debug)]
-enum Message {
+pub enum Message {
     Request {
         source: PeerId,
         target: PeerId,
@@ -114,39 +120,68 @@ enum Message {
         stream_id_target: Option<StreamId>,
         msg: Vec<u8>,
     },
-    Confirmation,
+    Confirmation {
+        target: PeerId,
+    },
+}
+
+impl Message {
+    pub fn target(&self) -> &PeerId {
+        match self {
+            Message::Request { target, .. } => target,
+            Message::Response { target, .. } => target,
+            Message::Stream { target, .. } => target,
+            Message::Confirmation { target } => target,
+        }
+    }
 }
 
 #[derive(Debug)]
-enum BeelayAction {
+struct ActionResult<T: Debug> {
+    message: Vec<Message>,
+    result: T
+}
+
+impl<T: Debug> ActionResult<T> {
+    fn new(result: T, message: Vec<Message>) -> Self {
+        Self { result, message }
+    }
+    
+    fn unpack(self) -> (T, Vec<Message>) {
+        (self.result, self.message)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum BeelayAction {
     CreateDoc(
-        oneshot::Sender<Result<(DocumentId, Commit), beelay_core::error::Create>>,
+        oneshot::Sender<ActionResult<Result<(DocumentId, Commit), beelay_core::error::Create>>>,
         Vec<u8>,
         Vec<KeyhiveEntityIdWrapper>,
     ),
-    LoadDoc(oneshot::Sender<Option<Vec<CommitOrBundle>>>, DocumentId),
+    LoadDoc(oneshot::Sender<ActionResult<Option<Vec<CommitOrBundle>>>>, DocumentId),
     DocStatus(
-        oneshot::Sender<beelay_core::doc_status::DocStatus>,
+        oneshot::Sender<ActionResult<beelay_core::doc_status::DocStatus>>,
         DocumentId,
     ),
     AddCommits(
-        oneshot::Sender<Result<Vec<BundleSpec>, beelay_core::error::AddCommits>>,
+        oneshot::Sender<ActionResult<Result<Vec<BundleSpec>, beelay_core::error::AddCommits>>>,
         DocumentId,
         Vec<Commit>,
     ),
     CreateContactCard(
-        oneshot::Sender<Result<ContactCardWrapper, beelay_core::error::CreateContactCard>>,
+        oneshot::Sender<ActionResult<Result<ContactCardWrapper, beelay_core::error::CreateContactCard>>>,
     ),
     AddMemberToDoc(
-        oneshot::Sender<()>,
+        oneshot::Sender<ActionResult<()>>,
         DocumentId,
         KeyhiveEntityIdWrapper,
         MemberAccess,
     ),
-    CreateStream(oneshot::Sender<StreamId>, PeerId),
-    AcceptStream(oneshot::Sender<StreamId>, PeerId),
-    DisconnectStream(oneshot::Sender<()>, StreamId),
-    SendMessage(oneshot::Sender<Message>, Message),
+    CreateStream(oneshot::Sender<ActionResult<StreamId>>, PeerId),
+    AcceptStream(oneshot::Sender<ActionResult<StreamId>>, PeerId),
+    DisconnectStream(oneshot::Sender<ActionResult<()>>, StreamId),
+    SendMessage(oneshot::Sender<ActionResult<()>>, Message),
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -239,7 +274,7 @@ pub struct BeelayActor {
     nickname: String,
     signing_key: SigningKey,
     send_channel: Sender<BeelayAction>,
-    handle: std::thread::JoinHandle<()>,
+    beelay_sync_handle: std::thread::JoinHandle<()>,
 }
 
 impl BeelayActor {
@@ -256,12 +291,12 @@ impl BeelayActor {
         self.send_channel.clone()
     }
     pub fn handle(&self) -> &std::thread::JoinHandle<()> {
-        &self.handle
+        &self.beelay_sync_handle
     }
     pub async fn spawn(
         nickname: &str,
         signing_key: SigningKey,
-        storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+        storage: BeelayStorage,
     ) -> Self {
         let (tx, rx) = mpsc::channel(100);
         let beelay_tx = tx.clone();
@@ -301,7 +336,7 @@ impl BeelayActor {
             nickname: nickname.to_string(),
             signing_key: signing_key_actor,
             send_channel: beelay_tx,
-            handle: handler_thread,
+            beelay_sync_handle: handler_thread,
         }
     }
 
@@ -309,7 +344,7 @@ impl BeelayActor {
         &self,
         content: Vec<u8>,
         other_owners: Vec<KeyhiveEntityIdWrapper>,
-    ) -> Result<(DocumentId, Commit), beelay_core::error::Create> {
+    ) -> ActionResult<Result<(DocumentId, Commit), beelay_core::error::Create>> {
         // Create the document action
         let (sender, receiver) = oneshot::channel();
         let beelay_create_doc = BeelayAction::CreateDoc(sender, content, other_owners);
@@ -320,7 +355,7 @@ impl BeelayActor {
         receiver.await.expect("Failed to receive create doc result")
     }
 
-    pub async fn load_doc(&self, doc_id: DocumentId) -> Option<Vec<CommitOrBundle>> {
+    pub async fn load_doc(&self, doc_id: DocumentId) -> ActionResult<Option<Vec<CommitOrBundle>>> {
         let (sender, receiver) = oneshot::channel();
         let beelay_load_doc = BeelayAction::LoadDoc(sender, doc_id);
         self.send_channel
@@ -334,7 +369,7 @@ impl BeelayActor {
         &self,
         document_id: DocumentId,
         commits: Vec<Commit>,
-    ) -> Result<Vec<BundleSpec>, AddCommits> {
+    ) -> ActionResult<Result<Vec<BundleSpec>, AddCommits>> {
         let (sender, receiver) = oneshot::channel();
         let beelay_add_commits = BeelayAction::AddCommits(sender, document_id, commits);
         self.send_channel
@@ -346,7 +381,7 @@ impl BeelayActor {
             .expect("Failed to receive add commits result")
     }
 
-    pub async fn create_contact_card(&self) -> Result<ContactCardWrapper, CreateContactCard> {
+    pub async fn create_contact_card(&self) -> ActionResult<Result<ContactCardWrapper, CreateContactCard>> {
         let (sender, receiver) = oneshot::channel();
         let beelay_create_contact_card = BeelayAction::CreateContactCard(sender);
         self.send_channel
@@ -363,7 +398,7 @@ impl BeelayActor {
         document_id: DocumentId,
         entity: KeyhiveEntityIdWrapper,
         access: MemberAccess,
-    ) {
+    ) -> ActionResult<()> {
         let (sender, receiver) = oneshot::channel();
         let beelay_add_member_to_doc =
             BeelayAction::AddMemberToDoc(sender, document_id, entity, access);
@@ -376,7 +411,7 @@ impl BeelayActor {
             .expect("Failed to receive add member to doc result")
     }
 
-    pub async fn create_stream(&self, target: PeerId) -> StreamId {
+    pub async fn create_stream(&self, target: PeerId) -> ActionResult<StreamId> {
         let (sender, receiver) = oneshot::channel();
         let beelay_create_stream = BeelayAction::CreateStream(sender, target);
         self.send_channel
@@ -388,7 +423,7 @@ impl BeelayActor {
             .expect("Failed to receive create stream result")
     }
 
-    pub async fn accept_stream(&self, target: PeerId) -> StreamId {
+    pub async fn accept_stream(&self, target: PeerId) -> ActionResult<StreamId> {
         let (sender, receiver) = oneshot::channel();
         let beelay_create_stream = BeelayAction::AcceptStream(sender, target);
         self.send_channel
@@ -400,7 +435,7 @@ impl BeelayActor {
             .expect("Failed to receive accept stream result")
     }
 
-    pub async fn disconnect_stream(&self, stream_id: StreamId) {
+    pub async fn disconnect_stream(&self, stream_id: StreamId) -> ActionResult<()> {
         let (sender, receiver) = oneshot::channel();
         let beelay_disconnect_stream = BeelayAction::DisconnectStream(sender, stream_id);
         self.send_channel
@@ -417,7 +452,7 @@ impl BeelayActor {
 struct BeelayBuilder {
     nickname: Option<String>,
     signing_key: Option<SigningKey>,
-    storage: Option<BTreeMap<beelay_core::StorageKey, Vec<u8>>>,
+    storage: Option<BeelayStorage>,
     recv_channel: Option<Receiver<BeelayAction>>,
     send_channel: Option<Sender<BeelayAction>>,
 }
@@ -443,7 +478,7 @@ impl BeelayBuilder {
         self
     }
 
-    pub fn storage(mut self, storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>) -> Self {
+    pub fn storage(mut self, storage: BeelayStorage) -> Self {
         self.storage = Some(storage);
         self
     }
@@ -540,7 +575,7 @@ struct Connection {
 pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     nickname: String,
     signing_key: SigningKey,
-    storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+    storage: BeelayStorage,
     core: Beelay<R>,
 
     outbox: Vec<Message>,
@@ -568,7 +603,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         signing_key: SigningKey,
         nickname: &str,
         core: Beelay<R>,
-        storage: BTreeMap<beelay_core::StorageKey, Vec<u8>>,
+        storage: BeelayStorage,
         inbox: VecDeque<EventData>,
         recv_channel: Receiver<BeelayAction>,
         send_channel: Sender<BeelayAction>,
@@ -852,49 +887,75 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 BeelayAction::CreateDoc(reply, content, other_owners) => {
                     let other_owners = other_owners.into_iter().map(|x| x.into()).collect();
                     let result = self.create_doc_with_contents(content, other_owners);
-                    reply.send(result).expect("send failed create doc")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::LoadDoc(reply, doc_id) => {
                     let result = self.load_doc(doc_id);
-                    reply.send(result).expect("send failed load doc")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::DocStatus(reply, doc_id) => {
                     let result = self.doc_status(&doc_id);
-                    reply.send(result).expect("send failed doc status")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::AddCommits(reply, doc_id, commits) => {
                     let result = self.add_commits(doc_id, commits);
-                    reply.send(result).expect("send failed add commits")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::CreateContactCard(reply) => {
                     let result = match self.contact_card() {
                         Ok(contact_card) => Ok(contact_card.into()),
                         Err(e) => Err(e),
                     };
-                    reply.send(result).expect("send failed create contact card")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::AddMemberToDoc(reply, doc_id, member, access) => {
                     let result = self.add_member_to_doc(doc_id, member.into(), access);
-                    reply.send(result).expect("send failed add member to doc")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::CreateStream(reply, target) => {
-                    let result = self.create_stream(&target, StreamDirection::Connecting {remote_audience: beelay_core::Audience::peer(&target)});
-                    reply.send(result).expect("send failed create stream")
+                    let result = self.create_stream(
+                        &target,
+                        StreamDirection::Connecting {
+                            remote_audience: beelay_core::Audience::peer(&target),
+                        },
+                    );
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::AcceptStream(reply, target) => {
-                    let result = self.create_stream(&target, StreamDirection::Accepting {receive_audience: None});
-                    reply.send(result).expect("send failed create stream")
+                    let result = self.create_stream(
+                        &target,
+                        StreamDirection::Accepting {
+                            receive_audience: None,
+                        },
+                    );
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::DisconnectStream(reply, stream_id) => {
                     let result = self.disconnect(stream_id);
-                    reply.send(result).expect("send failed disconnect stream")
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
-                BeelayAction::SendMessage(_, _) => {
-                    break;
+                BeelayAction::SendMessage(reply, _) => {
+                    // TODO: check incoming messages and process them
+                    let result = ();
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
             }
-            // TODO: output network events to the controller
         }
+    }
+
+    fn process_result<T: Debug>(&mut self, result: T) -> ActionResult<T> {
+        let outbox = std::mem::take(&mut self.outbox);
+        ActionResult::new(result, outbox)
     }
 
     pub fn run_until_quiescent(&mut self) {
@@ -950,7 +1011,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         let event_data = EventData::StreamEvent(stream_id_source, event);
                         // connection.send should receive this event
                     }
-                    Message::Confirmation => continue,
+                    Message::Confirmation { .. } => continue,
                 }
             }
         }
@@ -980,10 +1041,12 @@ mod tests {
         let content = b"test content".to_vec();
         let other_owners = vec![];
 
-        let (doc_id, commit) = beelay_actor
+        let (result, outgoing) = beelay_actor
             .create_doc(content.clone(), other_owners)
             .await
-            .expect("Failed to create document");
+            .unpack();
+        let (doc_id, commit) = result.expect("Failed to create document");
+            
 
         // Do something with doc_id and commit...
         assert_eq!(commit.contents().to_vec(), content);
@@ -998,13 +1061,14 @@ mod tests {
         let content = b"document to load".to_vec();
         let other_owners = vec![];
 
-        let (doc_id, _) = beelay_actor
+        let (result, outgoing) = beelay_actor
             .create_doc(content.clone(), other_owners)
             .await
-            .expect("Failed to create document");
+            .unpack();
+        let (doc_id, _) = result.expect("Failed to create document");
 
         // Now load the document
-        let loaded_doc = beelay_actor.load_doc(doc_id).await;
+        let (loaded_doc, messages) = beelay_actor.load_doc(doc_id).await.unpack();
 
         // Verify the document was loaded correctly
         assert!(
@@ -1028,10 +1092,11 @@ mod tests {
         let initial_content = b"initial content".to_vec();
         let other_owners = vec![];
 
-        let (doc_id, _) = beelay_actor
-            .create_doc(initial_content, other_owners)
+        let (result, outgoing) = beelay_actor
+            .create_doc(initial_content.clone(), other_owners)
             .await
-            .expect("Failed to create document");
+            .unpack();
+        let (doc_id, _) = result.expect("Failed to create document");
 
         // Create a new commit to add
         let new_content = b"updated content".to_vec();
@@ -1039,13 +1104,14 @@ mod tests {
         let commit = Commit::new(vec![], new_content, hash);
 
         // Add the commit to the document
-        let result = beelay_actor
+        let (result, outgoing) = beelay_actor
             .add_commits(doc_id, vec![commit])
             .await
-            .expect("Failed to add commits");
+            .unpack();
+        let result = result.expect("Failed to add commit");
 
         // Verify the document now has the new commit
-        let loaded_doc = beelay_actor.load_doc(doc_id).await;
+        let (loaded_doc, messages) = beelay_actor.load_doc(doc_id).await.unpack();
         assert!(
             loaded_doc.is_some(),
             "Document should be loaded after adding commits"
@@ -1058,10 +1124,11 @@ mod tests {
         let beelay_actor = spawn_beelay_actor().await;
 
         // Create a contact card
-        let contact_card = beelay_actor
+        let (contact_card, messages) = beelay_actor
             .create_contact_card()
             .await
-            .expect("Failed to create contact card");
+            .unpack();
+        let contact_card = contact_card.expect("Failed to create contact card");
 
         // Verify the contact card was created successfully
         // We can't check the exact content but we can verify it exists
@@ -1077,16 +1144,18 @@ mod tests {
         let content = b"shared document".to_vec();
         let other_owners = vec![];
 
-        let (doc_id, _) = beelay_actor
-            .create_doc(content, other_owners)
+        let (result, outgoing) = beelay_actor
+            .create_doc(content.clone(), other_owners)
             .await
-            .expect("Failed to create document");
+            .unpack();
+        let (doc_id, _) = result.expect("Failed to create document");
 
         // Create a contact card for a new member
-        let contact_card = beelay_actor
+        let (contact_card, messages) = beelay_actor
             .create_contact_card()
             .await
-            .expect("Failed to create contact card");
+            .unpack();
+        let contact_card = contact_card.expect("Failed to create contact card");
 
         // Add the member to the document
         let entity = KeyhiveEntityIdWrapper::Individual(contact_card);
@@ -1109,9 +1178,10 @@ mod tests {
         let source_peer_id = actor.peer_id();
 
         // Call the method under test
-        let stream_id = actor.create_stream(target_peer_id).await;
-        // let stream_id2 = actor2.accept_stream(source_peer_id).await;
-
+        let (stream_id, messages) = actor.create_stream(target_peer_id).await.unpack();
+        assert!(!messages.is_empty());
+        let stream_id2 = actor2.accept_stream(source_peer_id).await;
+        assert!(!messages.is_empty());
     }
 
     #[tokio::test]
@@ -1123,15 +1193,15 @@ mod tests {
         let target_peer_id = actor2.peer_id();
 
         // First create a stream
-        let stream_id = actor.create_stream(target_peer_id).await;
+        let (stream_id, messages) = actor.create_stream(target_peer_id).await.unpack();
+        assert!(!messages.is_empty());
 
         // Then disconnect it
         // This should complete without error
-        actor.disconnect_stream(stream_id).await;
+        let (_, messages) = actor.disconnect_stream(stream_id).await.unpack();
+        assert!(messages.is_empty());
 
         // Since disconnect_stream returns () (unit), we're just testing
         // that the function completes without panicking
     }
-
-
 }

@@ -1,10 +1,12 @@
 mod beelay;
 
 use anyhow::Result;
-use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
+use iroh::{Endpoint, NodeAddr, NodeId, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 pub const ALPN: &[u8] = b"beelay/1";
 
@@ -14,7 +16,30 @@ pub struct IrohBeelayProtocol {
 }
 
 impl IrohBeelayProtocol {
-    fn new(beelay_actor: beelay::BeelayActor) -> Self {
+    pub async fn new(
+        nickname: &str,
+        iroh_beelay_id: beelay::IrohBeelayID,
+        storage: beelay::BeelayStorage,
+        endpoint: Endpoint,
+    ) -> Self {
+        let beelay_actor =
+            beelay::BeelayActor::spawn(nickname, iroh_beelay_id.into(), storage).await;
+
+        // let outgoing_handle = tokio::spawn(async move {
+        //     while let Some(action) = rx.recv().await {
+        //         match action {
+        //             beelay::BeelayAction::SendMessage(reply, message) => {
+        //                 println!("sending message: {:?}", message);
+        //                 let peer_id =
+        //                     NodeId::try_from(message.target().as_bytes()).expect("invalid peer id");
+        //                 let connection = endpoint.connect(NodeAddr::from(peer_id), ALPN).await;
+        //                 // TODO: process connection and take actions.
+        //             }
+        //             _ => panic!("unexpected action, only supports send message"),
+        //         }
+        //     }
+        // });
+
         Self {
             beelay_actor: Arc::new(beelay_actor),
         }
@@ -57,11 +82,16 @@ pub async fn start_accept_side() -> Result<iroh::protocol::Router> {
         .discovery_n0()
         .bind()
         .await?;
-    let beelay_actor =
-        beelay::BeelayActor::spawn("node", iroh_beelay_id.into(), BTreeMap::new()).await;
 
+    let beelay_protocal = IrohBeelayProtocol::new(
+        "node",
+        iroh_beelay_id,
+        beelay::BeelayStorage::new(),
+        endpoint.clone(),
+    )
+    .await;
     let router = iroh::protocol::Router::builder(endpoint)
-        .accept(ALPN, IrohBeelayProtocol::new(beelay_actor)) // This makes the router handle incoming connections with our ALPN via Echo::accept!
+        .accept(ALPN, beelay_protocal) // This makes the router handle incoming connections with our ALPN via Echo::accept!
         .spawn()
         .await?;
 
