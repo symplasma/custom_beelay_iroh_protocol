@@ -384,6 +384,16 @@ impl BeelayActor {
             .expect("Failed to send load doc action");
         receiver.await.expect("Failed to receive load doc result")
     }
+    
+    pub async fn doc_status(&self, document_id: DocumentId) -> ActionResult<beelay_core::doc_status::DocStatus> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_doc_status = BeelayAction::DocStatus(sender, document_id);
+        self.send_channel
+            .send(beelay_doc_status)
+            .await
+            .expect("Failed to send doc status action");
+        receiver.await.expect("Failed to receive doc status result")
+    }
 
     pub async fn add_commits(
         &self,
@@ -584,6 +594,7 @@ impl BeelayBuilder {
     }
 }
 
+#[derive(Debug)]
 struct StreamState {
     target_peer_id: PeerId,
     source_stream_id: StreamId,
@@ -1034,8 +1045,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         ActionResult::new(result, outbox)
     }
 
-    pub fn process_message(&mut self, msg: Message) {
-        match msg {
+    pub fn process_message(&mut self, message: Message) {
+        match message {
             Message::Request {
                 source,
                 target,
@@ -1080,6 +1091,9 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 stream_id_target,
                 msg,
             } => {
+                // TODO: we are always setting this target stream id, we should be able to make this more with an accept state, let's do that later.
+                let stream_state = self.streams.get_mut(&stream_id_target).expect("stream state should exist");
+                stream_state.set_target_stream_id(stream_id_source);
                 let event = Event::handle_message(stream_id_target, msg);
                 let event_data = EventData::StreamEvent(stream_id_target, event);
                 self.inbox.push_back(event_data);
@@ -1284,6 +1298,7 @@ mod tests {
     ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
             for message in messages_to_2.into_iter() {
+                println!("sending stream message to: {:?}", message.target());
                 let (tx, rx) = oneshot::channel();
                 let sendable_message = BeelayAction::SendMessage(tx, message);
                 // println!("Sending message: {:?} {:?}", actor1.peer_id(), sendable_message);
@@ -1306,9 +1321,7 @@ mod tests {
         // 2. Create a document with a test entry on the first actor
         let test_content = b"test document content".to_vec();
         let (doc_result, _) = actor1.create_doc(test_content, vec![]).await.unpack();
-        let (document_id, _) = doc_result.expect("Failed to create document");
-        
-        actor1.display_storage().await;
+        let (document_id, initial_commit) = doc_result.expect("Failed to create document");
 
         // 3. Create a contact card for the second actor
         let (contact_card_result, _) = actor2.create_contact_card().await.unpack();
@@ -1330,6 +1343,16 @@ mod tests {
         // 7. Assert that there are outgoing messages from the stream creation
         assert!(!stream_messages.is_empty(), "Expected outgoing messages from stream creation");
         process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+
+        let (status, _ ) = actor2.doc_status(document_id).await.unpack();
+        
+        assert_eq!(
+            status,
+            beelay_core::doc_status::DocStatus {
+                local_heads: Some(vec![initial_commit.hash()])
+            }
+        );
+        
         println!("actor1: {:?}", actor1);
         actor1.display_storage().await;
         println!("-------------------------------------------------------------");
