@@ -117,7 +117,13 @@ pub enum Message {
         source: PeerId,
         target: PeerId,
         stream_id_source: StreamId,
-        stream_id_target: Option<StreamId>,
+        stream_id_target: StreamId,
+        msg: Vec<u8>,
+    },
+    StreamConnect {
+        source: PeerId,
+        target: PeerId,
+        stream_id_source: StreamId,
         msg: Vec<u8>,
     },
     Confirmation {
@@ -131,24 +137,31 @@ impl Message {
             Message::Request { target, .. } => target,
             Message::Response { target, .. } => target,
             Message::Stream { target, .. } => target,
+            Message::StreamConnect { target, .. } => target,
             Message::Confirmation { target } => target,
         }
     }
 }
 
 #[derive(Debug)]
-struct ActionResult<T: Debug> {
-    message: Vec<Message>,
+pub struct ActionResult<T: Debug> {
+    messages: Vec<Message>,
     result: T
 }
 
 impl<T: Debug> ActionResult<T> {
-    fn new(result: T, message: Vec<Message>) -> Self {
-        Self { result, message }
+    fn new(result: T, messages: Vec<Message>) -> Self {
+        Self { result, messages }
     }
     
     fn unpack(self) -> (T, Vec<Message>) {
-        (self.result, self.message)
+        (self.result, self.messages)
+    }
+    fn result(&self) -> &T {
+        &self.result
+    }
+    fn messages(&self) -> &Vec<Message> {
+        &self.messages
     }
 }
 
@@ -182,6 +195,7 @@ pub(crate) enum BeelayAction {
     AcceptStream(oneshot::Sender<ActionResult<StreamId>>, PeerId),
     DisconnectStream(oneshot::Sender<ActionResult<()>>, StreamId),
     SendMessage(oneshot::Sender<ActionResult<()>>, Message),
+    DisplayStorage(oneshot::Sender<ActionResult<()>>),
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -338,6 +352,12 @@ impl BeelayActor {
             send_channel: beelay_tx,
             beelay_sync_handle: handler_thread,
         }
+    }
+    
+    pub async fn display_storage(&self) {
+        let (sender, receiver) = oneshot::channel();
+        self.send_channel.send(BeelayAction::DisplayStorage(sender)).await.unwrap();
+        receiver.await.expect("Failed to print");
     }
 
     pub async fn create_doc(
@@ -564,11 +584,42 @@ impl BeelayBuilder {
     }
 }
 
-struct Connection {
-    send: SendStream,
-    recv: RecvStream,
+struct StreamState {
+    target_peer_id: PeerId,
+    source_stream_id: StreamId,
+    target_stream_id: Option<StreamId>
 }
 
+impl StreamState {
+    fn connect(target_peer_id: PeerId, source_stream_id: StreamId) -> Self {
+        Self {
+            target_peer_id,
+            source_stream_id,
+            target_stream_id: None
+        }
+    }
+    
+    fn accept(target_peer_id: PeerId, source_stream_id: StreamId, target_stream_id: StreamId) -> Self {
+        Self {
+            target_peer_id,
+            source_stream_id,
+            target_stream_id: Some(target_stream_id)
+        }
+    }
+    fn set_target_stream_id(&mut self, target_stream_id: StreamId) {
+        self.target_stream_id = Some(target_stream_id);
+    }
+    fn target_peer_id(&self) -> PeerId {
+        self.target_peer_id
+    }
+    fn source_stream_id(&self) -> StreamId {
+        self.source_stream_id
+    }
+    fn target_stream_id(&self) -> Option<StreamId> {
+        self.target_stream_id
+    }
+    
+}
 // TODO: we should send messages to an actor to handle Beelay state management and connections
 //  instead of locking, this will limit the need for both locks
 
@@ -591,7 +642,7 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
 
     shutdown: bool,
 
-    streams: HashMap<StreamId, PeerId>,
+    streams: HashMap<StreamId, StreamState>,
     starting_streams: HashMap<CommandId, PeerId>,
 
     recv_channel: Receiver<BeelayAction>,
@@ -640,6 +691,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             return;
         }
         while let Some(event) = self.inbox.pop_front() {
+            let flag_new_stream = false;
             let event = event.into_event();
             let now = UnixTimestampMillis::now();
             let results = {
@@ -658,7 +710,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         .starting_streams
                         .remove(&command)
                         .expect("should be a starting stream registered");
-                    self.streams.insert(stream_id, target);
+                    let stream_state = StreamState{target_peer_id: target, source_stream_id: stream_id, target_stream_id: None};
+                    self.streams.insert(stream_id, stream_state);
                 }
                 if let Ok(CommandResult::HandleRequest(response)) = &result {
                     let Ok(response) = response else {
@@ -689,15 +742,27 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             for (id, events) in results.new_stream_events {
                 for event in events {
                     tracing::trace!(?event, "stream event");
-                    let target = self.streams.get(&id).unwrap();
+                    let stream_state = self.streams.get(&id).unwrap();
                     match event {
-                        beelay_core::StreamEvent::Send(msg) => self.outbox.push(Message::Stream {
-                            source: self.peer_id(),
-                            target: *target,
-                            stream_id_source: id,
-                            stream_id_target: None,
-                            msg,
-                        }),
+                        beelay_core::StreamEvent::Send(msg) => {
+                            let outgoing_message = if let Some(target_stream_id) = stream_state.target_stream_id {
+                                Message::Stream {
+                                    source: self.peer_id(),
+                                    target: stream_state.target_peer_id(),
+                                    stream_id_source: id,
+                                    stream_id_target: target_stream_id,
+                                    msg,
+                                }
+                            } else {
+                                Message::StreamConnect {
+                                    source: self.peer_id(),
+                                    target: stream_state.target_peer_id(),
+                                    stream_id_source: id,
+                                    msg,
+                                }
+                            };
+                            self.outbox.push(outgoing_message);
+                        },
                         beelay_core::StreamEvent::Close => {
                             self.streams.remove(&id);
                         }
@@ -714,7 +779,6 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 self.shutdown = true;
             }
         }
-        println!("outbox: {:?}", self.outbox);
     }
 
     pub fn handle_task(&mut self, task: beelay_core::io::IoTask) -> Event {
@@ -880,6 +944,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         self.endpoints.insert(endpoint_id, *other);
         endpoint_id
     }
+    
+    pub fn output_storage(&self) {
+        println!("storage size: {:?}", self.storage.len());
+        for entry in self.storage.iter() {
+            println!("{:?}", entry);
+        }
+    }
 
     pub async fn process_actions(&mut self) {
         while let Some(action) = self.recv_channel.recv().await {
@@ -943,12 +1014,17 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     let action_result = self.process_result(result);
                     reply.send(action_result).expect("send failed for action");
                 }
-                BeelayAction::SendMessage(reply, _) => {
-                    // TODO: check incoming messages and process them
-                    let result = ();
-                    let action_result = self.process_result(result);
+                BeelayAction::SendMessage(reply, message) => {
+                    self.process_message(message);
+                    self.handle_events();
+                    let action_result = self.process_result(());
                     reply.send(action_result).expect("send failed for action");
                 }
+                BeelayAction::DisplayStorage(reply) => {
+                    self.output_storage();
+                    let action_result = self.process_result(());
+                    reply.send(action_result).unwrap()
+                },
             }
         }
     }
@@ -958,68 +1034,64 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         ActionResult::new(result, outbox)
     }
 
-    pub fn run_until_quiescent(&mut self) {
-        loop {
-            self.handle_events();
-            if self.outbox.is_empty() {
-                // no actions to take on the network
-                break;
+    pub fn process_message(&mut self, msg: Message) {
+        match msg {
+            Message::Request {
+                source,
+                target,
+                senders_req_id,
+                request,
+            } => {
+                let signed_message = beelay_core::SignedMessage::decode(&request).unwrap();
+                let (command_id, event) = Event::handle_request(signed_message, None);
+                let event_data =
+                    EventData::RequestEvent(command_id, event, senders_req_id, target);
+                self.inbox.push_back(event_data);
             }
-            let sender = self.peer_id();
-            let outbox = std::mem::take(&mut self.outbox);
-            // All messages in the outbox must be processed into an event we can send
-            // across the network.
-            // We want to decouple the receiving of any responses from the network into an active
-            // listening task that can inject them back into this state machine and respond to
-            // whatever the original command was
-            for msg in outbox.into_iter() {
-                match msg {
-                    Message::Request {
-                        source,
-                        target,
-                        senders_req_id,
-                        request,
-                    } => {
-                        let signed_message = beelay_core::SignedMessage::decode(&request).unwrap();
-                        let (command_id, event) = Event::handle_request(signed_message, None);
-                        // TODO: send this event over to target peer
-                        let event_data =
-                            EventData::RequestEvent(command_id, event, senders_req_id, sender);
-                        // connection.send should receive this event, command_id, sender, request_id
-                    }
-                    Message::Response {
-                        source,
-                        target,
-                        id,
-                        response,
-                    } => {
-                        let response = beelay_core::EndpointResponse::decode(&response).unwrap();
-                        let (_command_id, event) = Event::handle_response(id, response);
-                        //TODO: send this event ot target peer
-                        let event_data = EventData::Event(event);
-                        // connection.send should receive this event
-                    }
-                    Message::Stream {
-                        source,
-                        target,
-                        stream_id_source,
-                        stream_id_target,
-                        msg,
-                    } => {
-                        // TODO: send this over the network??
-                        let event = Event::handle_message(stream_id_source, msg);
-                        let event_data = EventData::StreamEvent(stream_id_source, event);
-                        // connection.send should receive this event
-                    }
-                    Message::Confirmation { .. } => continue,
-                }
+            Message::Response {
+                source,
+                target,
+                id,
+                response,
+            } => {
+                let response = beelay_core::EndpointResponse::decode(&response).unwrap();
+                let (_command_id, event) = Event::handle_response(id, response);
+                let event_data = EventData::Event(event);
+                self.inbox.push_back(event_data);
             }
+            Message::StreamConnect {
+                source,
+                target,
+                stream_id_source,
+                msg
+            } => {
+                let accepting_stream_id = self.create_stream(&source, StreamDirection::Accepting {receive_audience: None});
+                let stream_state = self.streams.get_mut(&accepting_stream_id).expect("stream state should exist");
+                stream_state.set_target_stream_id(stream_id_source);
+
+                let event = Event::handle_message(accepting_stream_id, msg);
+                let event_data = EventData::StreamEvent(accepting_stream_id, event);
+                self.inbox.push_back(event_data)
+            },
+            Message::Stream {
+                source,
+                target,
+                stream_id_source,
+                stream_id_target,
+                msg,
+            } => {
+                let event = Event::handle_message(stream_id_target, msg);
+                let event_data = EventData::StreamEvent(stream_id_target, event);
+                self.inbox.push_back(event_data);
+            }
+            Message::Confirmation { .. } => {},
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
     use super::*;
 
     async fn spawn_beelay_actor() -> BeelayActor {
@@ -1204,4 +1276,65 @@ mod tests {
         // Since disconnect_stream returns () (unit), we're just testing
         // that the function completes without panicking
     }
+
+    fn process_actor_messages_between_2_actors<'a>(
+        actor1: &'a BeelayActor,
+        actor2: &'a BeelayActor,
+        messages_to_2: Vec<Message>
+    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            for message in messages_to_2.into_iter() {
+                let (tx, rx) = oneshot::channel();
+                let sendable_message = BeelayAction::SendMessage(tx, message);
+                // println!("Sending message: {:?} {:?}", actor1.peer_id(), sendable_message);
+                actor2.send_channel.send(sendable_message).await.unwrap();
+
+                // wait for response
+                let (_, messages_to_1) = rx.await.unwrap().unpack();
+                process_actor_messages_between_2_actors(actor2, actor1, messages_to_1).await;
+            }
+        })
+    }
+
+
+    #[tokio::test]
+    async fn test_beelay_document_sharing_and_streaming() {
+        // 1. Spawn two separate beelay actors
+        let actor1 = spawn_beelay_actor().await;
+        let actor2 = spawn_beelay_actor().await;
+
+        // 2. Create a document with a test entry on the first actor
+        let test_content = b"test document content".to_vec();
+        let (doc_result, _) = actor1.create_doc(test_content, vec![]).await.unpack();
+        let (document_id, _) = doc_result.expect("Failed to create document");
+        
+        actor1.display_storage().await;
+
+        // 3. Create a contact card for the second actor
+        let (contact_card_result, _) = actor2.create_contact_card().await.unpack();
+        let contact_card = contact_card_result.expect("Failed to create contact card");
+
+        // 4. Convert the contact card into a KeyhiveEntityIdWrapper of the Individual type
+        let entity_id = KeyhiveEntityIdWrapper::Individual(contact_card);
+
+        // 5. Add the second actor as a member to the document created on the first actor
+        let (_, add_member_messages) = actor1
+            .add_member_to_doc(document_id, entity_id, MemberAccess::Read)
+            .await
+            .unpack();
+
+        // 6. Create a stream from the first actor to the second actor
+        let target_peer_id = actor2.peer_id();
+        let (stream_id, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+
+        // 7. Assert that there are outgoing messages from the stream creation
+        assert!(!stream_messages.is_empty(), "Expected outgoing messages from stream creation");
+        process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+        println!("actor1: {:?}", actor1);
+        actor1.display_storage().await;
+        println!("-------------------------------------------------------------");
+        println!("actor2: {:?}", actor2);
+        actor2.display_storage().await;
+    }
+
 }

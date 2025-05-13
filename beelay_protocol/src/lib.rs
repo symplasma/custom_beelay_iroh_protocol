@@ -13,6 +13,7 @@ pub const ALPN: &[u8] = b"beelay/1";
 #[derive(Debug, Clone)]
 pub struct IrohBeelayProtocol {
     beelay_actor: Arc<beelay::BeelayActor>,
+    endpoint: Endpoint,
 }
 
 impl IrohBeelayProtocol {
@@ -24,24 +25,9 @@ impl IrohBeelayProtocol {
     ) -> Self {
         let beelay_actor =
             beelay::BeelayActor::spawn(nickname, iroh_beelay_id.into(), storage).await;
-
-        // let outgoing_handle = tokio::spawn(async move {
-        //     while let Some(action) = rx.recv().await {
-        //         match action {
-        //             beelay::BeelayAction::SendMessage(reply, message) => {
-        //                 println!("sending message: {:?}", message);
-        //                 let peer_id =
-        //                     NodeId::try_from(message.target().as_bytes()).expect("invalid peer id");
-        //                 let connection = endpoint.connect(NodeAddr::from(peer_id), ALPN).await;
-        //                 // TODO: process connection and take actions.
-        //             }
-        //             _ => panic!("unexpected action, only supports send message"),
-        //         }
-        //     }
-        // });
-
         Self {
             beelay_actor: Arc::new(beelay_actor),
+            endpoint
         }
     }
 }
