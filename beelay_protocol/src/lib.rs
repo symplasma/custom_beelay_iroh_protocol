@@ -1,33 +1,34 @@
+mod actor;
 mod beelay;
+mod messages;
+mod primitives;
+mod storage_handling;
 
 use anyhow::Result;
-use iroh::{Endpoint, NodeAddr, NodeId, endpoint::Connection, protocol::ProtocolHandler};
+use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint, NodeAddr};
 use n0_future::boxed::BoxFuture;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 pub const ALPN: &[u8] = b"beelay/1";
 
 #[derive(Debug, Clone)]
 pub struct IrohBeelayProtocol {
-    beelay_actor: Arc<beelay::BeelayActor>,
+    beelay_actor: Arc<actor::BeelayActor>,
     endpoint: Endpoint,
 }
 
 impl IrohBeelayProtocol {
     pub async fn new(
         nickname: &str,
-        iroh_beelay_id: beelay::IrohBeelayID,
-        storage: beelay::BeelayStorage,
+        iroh_beelay_id: primitives::IrohBeelayID,
+        storage: storage_handling::BeelayStorage,
         endpoint: Endpoint,
     ) -> Self {
         let beelay_actor =
-            beelay::BeelayActor::spawn(nickname, iroh_beelay_id.into(), storage).await;
+            actor::BeelayActor::spawn(nickname, iroh_beelay_id.into(), storage).await;
         Self {
             beelay_actor: Arc::new(beelay_actor),
-            endpoint
+            endpoint,
         }
     }
 }
@@ -62,7 +63,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
 }
 
 pub async fn start_accept_side() -> Result<iroh::protocol::Router> {
-    let iroh_beelay_id = beelay::IrohBeelayID::generate();
+    let iroh_beelay_id = primitives::IrohBeelayID::generate();
     let endpoint = Endpoint::builder()
         .secret_key(iroh_beelay_id.clone().into())
         .discovery_n0()
@@ -72,7 +73,7 @@ pub async fn start_accept_side() -> Result<iroh::protocol::Router> {
     let beelay_protocal = IrohBeelayProtocol::new(
         "node",
         iroh_beelay_id,
-        beelay::BeelayStorage::new(),
+        storage_handling::BeelayStorage::new(),
         endpoint.clone(),
     )
     .await;
