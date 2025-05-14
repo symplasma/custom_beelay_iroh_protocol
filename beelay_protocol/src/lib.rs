@@ -32,15 +32,15 @@ impl IrohBeelayProtocol {
             endpoint,
         }
     }
-    
+
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
-    
+
     pub fn beelay_actor(&self) -> &Arc<actor::BeelayActor> {
         &self.beelay_actor
     }
-    
+
     pub async fn dial_node_and_send_messages(
         &self,
         node_addr: NodeAddr,
@@ -53,19 +53,21 @@ impl IrohBeelayProtocol {
         conn.close(0u32.into(), b"bye!");
         Ok(())
     }
-    
-    async fn send_messages(&self, messages: Vec<messages::Message>, send: &mut SendStream, recv: &mut RecvStream) -> Result<()> {
+
+    async fn send_messages(
+        &self,
+        messages: Vec<messages::Message>,
+        send: &mut SendStream,
+        recv: &mut RecvStream,
+    ) -> Result<()> {
         for msg in messages {
             Self::send_msg(msg, send).await?;
             let respond = Self::recv_msg(recv).await?;
             let (_, messages) = self.beelay_actor.incoming_message(respond).await.unpack();
-            Box::pin(
-                self.send_messages(messages, send, recv)
-            ).await?;
+            Box::pin(self.send_messages(messages, send, recv)).await?;
         }
         Ok(())
     }
-    
 
     async fn send_msg(msg: messages::Message, send: &mut SendStream) -> Result<()> {
         let msg_serializable: messages::SerializableMessage = msg.into();
@@ -95,14 +97,9 @@ impl ProtocolHandler for IrohBeelayProtocol {
         Box::pin(async move {
             let node_id = connection.remote_node_id()?;
             println!("accepted connection from {node_id}");
-
             let (mut send, mut recv) = connection.accept_bi().await?;
             loop {
                 // Read the message from the stream.
-
-
-
-
                 match Self::recv_msg(&mut recv).await {
                     Ok(msg) => {
                         let (_, outgoing_messages) = beelay_protocol
@@ -111,6 +108,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             .await
                             .unpack();
                         for msg in outgoing_messages {
+                            //TODO: need to be able to dial out to other nodes if needed based on the target in the messages
                             Self::send_msg(msg, &mut send).await?;
                         }
                     }
@@ -150,44 +148,11 @@ pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayPr
     Ok((router, beelay_protocal))
 }
 
-pub async fn connect_side(addr: NodeAddr) -> Result<()> {
-    let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-
-    // Open a connection to the accepting node
-    let conn = endpoint.connect(addr, ALPN).await?;
-
-    // Open a bidirectional QUIC stream
-    let (mut send, mut recv) = conn.open_bi().await?;
-
-    // Send some data to be echoed
-    send.write_all(b"Hello, world!").await?;
-
-    // Signal the end of data for this particular stream
-    send.finish()?;
-
-    // Receive the echo but limit reading up to a maximum of 1000 bytes
-    let response = recv.read_to_end(1000).await?;
-    assert_eq!(&response, b"Hello, world!");
-
-    // Explicitly close the whole connection.
-    conn.close(0u32.into(), b"bye!");
-
-    // The above call only queues a close message to be sent (see how it's not async!).
-    // We need to actually call this to make sure this message is sent out.
-    endpoint.close().await;
-    // If we don't call this but continue using the endpoint, we then the queued
-    // close call will eventually be picked up and sent.
-    // But always try to wait for endpoint.close().await to go through before dropping
-    // the endpoint to ensure any queued messages are sent through and connections are
-    // closed gracefully.
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use beelay_core::keyhive::MemberAccess;
-    use crate::primitives::KeyhiveEntityIdWrapper;
     use super::*;
+    use crate::primitives::KeyhiveEntityIdWrapper;
+    use beelay_core::keyhive::MemberAccess;
 
     #[tokio::test]
     async fn it_works() {
@@ -195,7 +160,11 @@ mod tests {
         let (node_2, beelay_2) = start_beelay_node().await.unwrap();
 
         let test_content = b"test document content".to_vec();
-        let (doc_result, _) = beelay_1.beelay_actor().create_doc(test_content, vec![]).await.unpack();
+        let (doc_result, _) = beelay_1
+            .beelay_actor()
+            .create_doc(test_content, vec![])
+            .await
+            .unpack();
         let (document_id, initial_commit) = doc_result.expect("Failed to create document");
 
         // 3. Create a contact card for the second actor
@@ -206,25 +175,37 @@ mod tests {
         let entity_id = KeyhiveEntityIdWrapper::Individual(contact_card);
 
         // 5. Add the second actor as a member to the document created on the first actor
-        let (_, add_member_messages) = beelay_1.beelay_actor()
+        let (_, add_member_messages) = beelay_1
+            .beelay_actor()
             .add_member_to_doc(document_id, entity_id, MemberAccess::Read)
             .await
             .unpack();
 
         // 6. Create a stream from the first actor to the second actor
         let target_peer_id = beelay_2.beelay_actor().peer_id();
-        let (stream_id, stream_messages) = beelay_1.beelay_actor().create_stream(target_peer_id).await.unpack();
+        let (stream_id, stream_messages) = beelay_1
+            .beelay_actor()
+            .create_stream(target_peer_id)
+            .await
+            .unpack();
 
         // 7. Assert that there are outgoing messages from the stream creation
         assert!(
             !stream_messages.is_empty(),
             "Expected outgoing messages from stream creation"
         );
-        
-        let node_addr_2 = node_2.endpoint().node_addr().await.unwrap();
-        beelay_1.dial_node_and_send_messages(node_addr_2, stream_messages).await.unwrap();
 
-        let (status, _) = beelay_2.beelay_actor().doc_status(document_id).await.unpack();
+        let node_addr_2 = node_2.endpoint().node_addr().await.unwrap();
+        beelay_1
+            .dial_node_and_send_messages(node_addr_2, stream_messages)
+            .await
+            .unwrap();
+
+        let (status, _) = beelay_2
+            .beelay_actor()
+            .doc_status(document_id)
+            .await
+            .unpack();
 
         assert_eq!(
             status,
