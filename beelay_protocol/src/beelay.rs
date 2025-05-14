@@ -146,14 +146,14 @@ impl Message {
 #[derive(Debug)]
 pub struct ActionResult<T: Debug> {
     messages: Vec<Message>,
-    result: T
+    result: T,
 }
 
 impl<T: Debug> ActionResult<T> {
     fn new(result: T, messages: Vec<Message>) -> Self {
         Self { result, messages }
     }
-    
+
     fn unpack(self) -> (T, Vec<Message>) {
         (self.result, self.messages)
     }
@@ -172,19 +172,20 @@ pub(crate) enum BeelayAction {
         Vec<u8>,
         Vec<KeyhiveEntityIdWrapper>,
     ),
-    LoadDoc(oneshot::Sender<ActionResult<Option<Vec<CommitOrBundle>>>>, DocumentId),
+    LoadDoc(
+        oneshot::Sender<ActionResult<Option<Vec<CommitOrBundle>>>>,
+        DocumentId,
+    ),
     DocStatus(
         oneshot::Sender<ActionResult<beelay_core::doc_status::DocStatus>>,
         DocumentId,
     ),
     AddCommits(
-        oneshot::Sender<ActionResult<Result<Vec<BundleSpec>, beelay_core::error::AddCommits>>>,
+        oneshot::Sender<ActionResult<Result<Vec<BundleSpec>, AddCommits>>>,
         DocumentId,
         Vec<Commit>,
     ),
-    CreateContactCard(
-        oneshot::Sender<ActionResult<Result<ContactCardWrapper, beelay_core::error::CreateContactCard>>>,
-    ),
+    CreateContactCard(oneshot::Sender<ActionResult<Result<ContactCardWrapper, CreateContactCard>>>),
     AddMemberToDoc(
         oneshot::Sender<ActionResult<()>>,
         DocumentId,
@@ -307,11 +308,7 @@ impl BeelayActor {
     pub fn handle(&self) -> &std::thread::JoinHandle<()> {
         &self.beelay_sync_handle
     }
-    pub async fn spawn(
-        nickname: &str,
-        signing_key: SigningKey,
-        storage: BeelayStorage,
-    ) -> Self {
+    pub async fn spawn(nickname: &str, signing_key: SigningKey, storage: BeelayStorage) -> Self {
         let (tx, rx) = mpsc::channel(100);
         let beelay_tx = tx.clone();
         let signing_key_actor = signing_key.clone();
@@ -353,10 +350,13 @@ impl BeelayActor {
             beelay_sync_handle: handler_thread,
         }
     }
-    
+
     pub async fn display_storage(&self) {
         let (sender, receiver) = oneshot::channel();
-        self.send_channel.send(BeelayAction::DisplayStorage(sender)).await.unwrap();
+        self.send_channel
+            .send(BeelayAction::DisplayStorage(sender))
+            .await
+            .unwrap();
         receiver.await.expect("Failed to print");
     }
 
@@ -384,8 +384,11 @@ impl BeelayActor {
             .expect("Failed to send load doc action");
         receiver.await.expect("Failed to receive load doc result")
     }
-    
-    pub async fn doc_status(&self, document_id: DocumentId) -> ActionResult<beelay_core::doc_status::DocStatus> {
+
+    pub async fn doc_status(
+        &self,
+        document_id: DocumentId,
+    ) -> ActionResult<beelay_core::doc_status::DocStatus> {
         let (sender, receiver) = oneshot::channel();
         let beelay_doc_status = BeelayAction::DocStatus(sender, document_id);
         self.send_channel
@@ -411,7 +414,9 @@ impl BeelayActor {
             .expect("Failed to receive add commits result")
     }
 
-    pub async fn create_contact_card(&self) -> ActionResult<Result<ContactCardWrapper, CreateContactCard>> {
+    pub async fn create_contact_card(
+        &self,
+    ) -> ActionResult<Result<ContactCardWrapper, CreateContactCard>> {
         let (sender, receiver) = oneshot::channel();
         let beelay_create_contact_card = BeelayAction::CreateContactCard(sender);
         self.send_channel
@@ -552,7 +557,7 @@ impl BeelayBuilder {
         };
 
         let config = Config::new(thread_rng(), signing_key.verifying_key());
-        let mut step = beelay_core::Beelay::load(config, UnixTimestampMillis::now());
+        let mut step = Beelay::load(config, UnixTimestampMillis::now());
         let mut completed_tasks = Vec::new();
         let mut inbox = VecDeque::new();
         let beelay = loop {
@@ -598,7 +603,7 @@ impl BeelayBuilder {
 struct StreamState {
     target_peer_id: PeerId,
     source_stream_id: StreamId,
-    target_stream_id: Option<StreamId>
+    target_stream_id: Option<StreamId>,
 }
 
 impl StreamState {
@@ -606,15 +611,19 @@ impl StreamState {
         Self {
             target_peer_id,
             source_stream_id,
-            target_stream_id: None
+            target_stream_id: None,
         }
     }
-    
-    fn accept(target_peer_id: PeerId, source_stream_id: StreamId, target_stream_id: StreamId) -> Self {
+
+    fn accept(
+        target_peer_id: PeerId,
+        source_stream_id: StreamId,
+        target_stream_id: StreamId,
+    ) -> Self {
         Self {
             target_peer_id,
             source_stream_id,
-            target_stream_id: Some(target_stream_id)
+            target_stream_id: Some(target_stream_id),
         }
     }
     fn set_target_stream_id(&mut self, target_stream_id: StreamId) {
@@ -629,10 +638,7 @@ impl StreamState {
     fn target_stream_id(&self) -> Option<StreamId> {
         self.target_stream_id
     }
-    
 }
-// TODO: we should send messages to an actor to handle Beelay state management and connections
-//  instead of locking, this will limit the need for both locks
 
 pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     nickname: String,
@@ -702,7 +708,6 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             return;
         }
         while let Some(event) = self.inbox.pop_front() {
-            let flag_new_stream = false;
             let event = event.into_event();
             let now = UnixTimestampMillis::now();
             let results = {
@@ -721,7 +726,11 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         .starting_streams
                         .remove(&command)
                         .expect("should be a starting stream registered");
-                    let stream_state = StreamState{target_peer_id: target, source_stream_id: stream_id, target_stream_id: None};
+                    let stream_state = StreamState {
+                        target_peer_id: target,
+                        source_stream_id: stream_id,
+                        target_stream_id: None,
+                    };
                     self.streams.insert(stream_id, stream_state);
                 }
                 if let Ok(CommandResult::HandleRequest(response)) = &result {
@@ -756,24 +765,25 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     let stream_state = self.streams.get(&id).unwrap();
                     match event {
                         beelay_core::StreamEvent::Send(msg) => {
-                            let outgoing_message = if let Some(target_stream_id) = stream_state.target_stream_id {
-                                Message::Stream {
-                                    source: self.peer_id(),
-                                    target: stream_state.target_peer_id(),
-                                    stream_id_source: id,
-                                    stream_id_target: target_stream_id,
-                                    msg,
-                                }
-                            } else {
-                                Message::StreamConnect {
-                                    source: self.peer_id(),
-                                    target: stream_state.target_peer_id(),
-                                    stream_id_source: id,
-                                    msg,
-                                }
-                            };
+                            let outgoing_message =
+                                if let Some(target_stream_id) = stream_state.target_stream_id {
+                                    Message::Stream {
+                                        source: self.peer_id(),
+                                        target: stream_state.target_peer_id(),
+                                        stream_id_source: id,
+                                        stream_id_target: target_stream_id,
+                                        msg,
+                                    }
+                                } else {
+                                    Message::StreamConnect {
+                                        source: self.peer_id(),
+                                        target: stream_state.target_peer_id(),
+                                        stream_id_source: id,
+                                        msg,
+                                    }
+                                };
                             self.outbox.push(outgoing_message);
-                        },
+                        }
                         beelay_core::StreamEvent::Close => {
                             self.streams.remove(&id);
                         }
@@ -807,9 +817,9 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         &mut self,
         content: Vec<u8>,
         other_owners: Vec<KeyhiveEntityId>,
-    ) -> Result<(DocumentId, beelay_core::Commit), beelay_core::error::Create> {
+    ) -> Result<(DocumentId, Commit), beelay_core::error::Create> {
         let hash = CommitHash::from(blake3::hash(&content).as_bytes());
-        let initial_commit = beelay_core::Commit::new(vec![], content, hash);
+        let initial_commit = Commit::new(vec![], content, hash);
         let command = {
             let (command, event) = Event::create_doc(initial_commit.clone(), other_owners);
             self.inbox.push_back(EventData::Event(event));
@@ -841,13 +851,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         };
         self.handle_events();
         match self.completed_commands.remove(&command) {
-            Some(Ok(beelay_core::CommandResult::LoadDoc(commits))) => commits,
+            Some(Ok(CommandResult::LoadDoc(commits))) => commits,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
     }
 
-    pub fn contact_card(&mut self) -> Result<ContactCard, beelay_core::error::CreateContactCard> {
+    pub fn contact_card(&mut self) -> Result<ContactCard, CreateContactCard> {
         let (command_id, event) = Event::create_contact_card();
         self.inbox.push_back(EventData::Event(event));
         self.handle_events();
@@ -875,11 +885,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         }
     }
 
-    pub fn create_stream(
-        &mut self,
-        target: &PeerId,
-        direction: beelay_core::StreamDirection,
-    ) -> StreamId {
+    pub fn create_stream(&mut self, target: &PeerId, direction: StreamDirection) -> StreamId {
         let (command, event) = Event::create_stream(direction);
         self.starting_streams.insert(command, *target);
         self.inbox.push_back(EventData::Event(event));
@@ -897,8 +903,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn add_commits(
         &mut self,
         doc_id: DocumentId,
-        commits: Vec<beelay_core::Commit>,
-    ) -> Result<Vec<BundleSpec>, beelay_core::error::AddCommits> {
+        commits: Vec<Commit>,
+    ) -> Result<Vec<BundleSpec>, AddCommits> {
         let command = {
             let (command, event) = Event::add_commits(doc_id, commits);
             self.inbox.push_back(EventData::Event(event));
@@ -955,7 +961,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         self.endpoints.insert(endpoint_id, *other);
         endpoint_id
     }
-    
+
     pub fn output_storage(&self) {
         println!("storage size: {:?}", self.storage.len());
         for entry in self.storage.iter() {
@@ -1035,7 +1041,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     self.output_storage();
                     let action_result = self.process_result(());
                     reply.send(action_result).unwrap()
-                },
+                }
             }
         }
     }
@@ -1055,8 +1061,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             } => {
                 let signed_message = beelay_core::SignedMessage::decode(&request).unwrap();
                 let (command_id, event) = Event::handle_request(signed_message, None);
-                let event_data =
-                    EventData::RequestEvent(command_id, event, senders_req_id, target);
+                let event_data = EventData::RequestEvent(command_id, event, senders_req_id, target);
                 self.inbox.push_back(event_data);
             }
             Message::Response {
@@ -1074,16 +1079,24 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 source,
                 target,
                 stream_id_source,
-                msg
+                msg,
             } => {
-                let accepting_stream_id = self.create_stream(&source, StreamDirection::Accepting {receive_audience: None});
-                let stream_state = self.streams.get_mut(&accepting_stream_id).expect("stream state should exist");
+                let accepting_stream_id = self.create_stream(
+                    &source,
+                    StreamDirection::Accepting {
+                        receive_audience: None,
+                    },
+                );
+                let stream_state = self
+                    .streams
+                    .get_mut(&accepting_stream_id)
+                    .expect("stream state should exist");
                 stream_state.set_target_stream_id(stream_id_source);
 
                 let event = Event::handle_message(accepting_stream_id, msg);
                 let event_data = EventData::StreamEvent(accepting_stream_id, event);
                 self.inbox.push_back(event_data)
-            },
+            }
             Message::Stream {
                 source,
                 target,
@@ -1092,21 +1105,24 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 msg,
             } => {
                 // TODO: we are always setting this target stream id, we should be able to make this more with an accept state, let's do that later.
-                let stream_state = self.streams.get_mut(&stream_id_target).expect("stream state should exist");
+                let stream_state = self
+                    .streams
+                    .get_mut(&stream_id_target)
+                    .expect("stream state should exist");
                 stream_state.set_target_stream_id(stream_id_source);
                 let event = Event::handle_message(stream_id_target, msg);
                 let event_data = EventData::StreamEvent(stream_id_target, event);
                 self.inbox.push_back(event_data);
             }
-            Message::Confirmation { .. } => {},
+            Message::Confirmation { .. } => {}
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::pin::Pin;
     use super::*;
+    use std::pin::Pin;
 
     async fn spawn_beelay_actor() -> BeelayActor {
         BeelayActor::spawn(
@@ -1132,7 +1148,6 @@ mod tests {
             .await
             .unpack();
         let (doc_id, commit) = result.expect("Failed to create document");
-            
 
         // Do something with doc_id and commit...
         assert_eq!(commit.contents().to_vec(), content);
@@ -1210,10 +1225,7 @@ mod tests {
         let beelay_actor = spawn_beelay_actor().await;
 
         // Create a contact card
-        let (contact_card, messages) = beelay_actor
-            .create_contact_card()
-            .await
-            .unpack();
+        let (contact_card, messages) = beelay_actor.create_contact_card().await.unpack();
         let contact_card = contact_card.expect("Failed to create contact card");
 
         // Verify the contact card was created successfully
@@ -1237,10 +1249,7 @@ mod tests {
         let (doc_id, _) = result.expect("Failed to create document");
 
         // Create a contact card for a new member
-        let (contact_card, messages) = beelay_actor
-            .create_contact_card()
-            .await
-            .unpack();
+        let (contact_card, messages) = beelay_actor.create_contact_card().await.unpack();
         let contact_card = contact_card.expect("Failed to create contact card");
 
         // Add the member to the document
@@ -1294,7 +1303,7 @@ mod tests {
     fn process_actor_messages_between_2_actors<'a>(
         actor1: &'a BeelayActor,
         actor2: &'a BeelayActor,
-        messages_to_2: Vec<Message>
+        messages_to_2: Vec<Message>,
     ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
             for message in messages_to_2.into_iter() {
@@ -1310,7 +1319,6 @@ mod tests {
             }
         })
     }
-
 
     #[tokio::test]
     async fn test_beelay_document_sharing_and_streaming() {
@@ -1341,23 +1349,25 @@ mod tests {
         let (stream_id, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
 
         // 7. Assert that there are outgoing messages from the stream creation
-        assert!(!stream_messages.is_empty(), "Expected outgoing messages from stream creation");
+        assert!(
+            !stream_messages.is_empty(),
+            "Expected outgoing messages from stream creation"
+        );
         process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
 
-        let (status, _ ) = actor2.doc_status(document_id).await.unpack();
-        
+        let (status, _) = actor2.doc_status(document_id).await.unpack();
+
         assert_eq!(
             status,
             beelay_core::doc_status::DocStatus {
                 local_heads: Some(vec![initial_commit.hash()])
             }
         );
-        
+
         println!("actor1: {:?}", actor1);
         actor1.display_storage().await;
         println!("-------------------------------------------------------------");
         println!("actor2: {:?}", actor2);
         actor2.display_storage().await;
     }
-
 }
