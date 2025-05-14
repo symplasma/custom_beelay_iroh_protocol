@@ -132,6 +132,15 @@ impl BeelayActor {
             beelay_sync_handle: handler_thread,
         }
     }
+    
+    pub async fn incoming_message(&self, msg: Message) -> ActionResult<()> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_channel
+            .send(BeelayAction::SendMessage(sender, msg))
+            .await
+            .unwrap();
+        receiver.await.expect("Failed to get response from sent message")
+    }
 
     pub async fn display_storage(&self) {
         let (sender, receiver) = oneshot::channel();
@@ -461,7 +470,6 @@ mod tests {
     ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
         Box::pin(async move {
             for message in messages_to_2.into_iter() {
-                println!("sending stream message to: {:?}", message.target());
                 let (tx, rx) = oneshot::channel();
                 let sendable_message = BeelayAction::SendMessage(tx, message);
                 // println!("Sending message: {:?} {:?}", actor1.peer_id(), sendable_message);
@@ -518,10 +526,10 @@ mod tests {
             }
         );
 
-        println!("actor1: {:?}", actor1);
-        actor1.display_storage().await;
-        println!("-------------------------------------------------------------");
-        println!("actor2: {:?}", actor2);
-        actor2.display_storage().await;
+        // println!("actor1: {:?}", actor1);
+        // actor1.display_storage().await;
+        // println!("-------------------------------------------------------------");
+        // println!("actor2: {:?}", actor2);
+        // actor2.display_storage().await;
     }
 }

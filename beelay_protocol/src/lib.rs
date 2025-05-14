@@ -5,6 +5,7 @@ mod primitives;
 mod storage_handling;
 
 use anyhow::Result;
+use iroh::endpoint::{RecvStream, SendStream};
 use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint, NodeAddr};
 use n0_future::boxed::BoxFuture;
 use std::sync::Arc;
@@ -31,38 +32,102 @@ impl IrohBeelayProtocol {
             endpoint,
         }
     }
+    
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+    
+    pub fn beelay_actor(&self) -> &Arc<actor::BeelayActor> {
+        &self.beelay_actor
+    }
+    
+    pub async fn dial_node_and_send_messages(
+        &self,
+        node_addr: NodeAddr,
+        messages: Vec<messages::Message>,
+    ) -> Result<()> {
+        let conn = self.endpoint.connect(node_addr, ALPN).await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        self.send_messages(messages, &mut send, &mut recv).await?;
+        send.finish()?;
+        conn.close(0u32.into(), b"bye!");
+        Ok(())
+    }
+    
+    async fn send_messages(&self, messages: Vec<messages::Message>, send: &mut SendStream, recv: &mut RecvStream) -> Result<()> {
+        for msg in messages {
+            Self::send_msg(msg, send).await?;
+            let respond = Self::recv_msg(recv).await?;
+            let (_, messages) = self.beelay_actor.incoming_message(respond).await.unpack();
+            Box::pin(
+                self.send_messages(messages, send, recv)
+            ).await?;
+        }
+        Ok(())
+    }
+    
+
+    async fn send_msg(msg: messages::Message, send: &mut SendStream) -> Result<()> {
+        let msg_serializable: messages::SerializableMessage = msg.into();
+        let encoded = postcard::to_stdvec(&msg_serializable)?;
+        send.write_all(&(encoded.len() as u64).to_le_bytes())
+            .await?;
+        send.write_all(&encoded).await?;
+        Ok(())
+    }
+
+    async fn recv_msg(recv: &mut RecvStream) -> Result<messages::Message> {
+        let mut incoming_len = [0u8; 8];
+        recv.read_exact(&mut incoming_len).await?;
+        let len = u64::from_le_bytes(incoming_len);
+
+        let mut buffer = vec![0u8; len as usize];
+        recv.read_exact(&mut buffer).await?;
+        let msg: messages::SerializableMessage = postcard::from_bytes(&buffer)?;
+        let msg_unserializable: messages::Message = msg.into();
+        Ok(msg_unserializable)
+    }
 }
 
 impl ProtocolHandler for IrohBeelayProtocol {
     fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {
+        let beelay_protocol = self.clone();
         Box::pin(async move {
-            // We can get the remote's node id from the connection.
             let node_id = connection.remote_node_id()?;
             println!("accepted connection from {node_id}");
 
-            // Our protocol is a simple request-response protocol, so we expect the
-            // connecting peer to open a single bidirectional stream.
             let (mut send, mut recv) = connection.accept_bi().await?;
+            loop {
+                // Read the message from the stream.
 
-            // Echo any bytes received back directly.
-            // This will keep copying until the sender signals the end of data on the stream.
-            let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
-            println!("Copied over {bytes_sent} byte(s)");
 
-            // By calling `finish` on the send stream, we signal that we will not send anything
-            // further, which makes the receive stream on the other end terminate.
-            send.finish()?;
 
-            // Wait until the remote closes the connection, which it does once it
-            // received the response.
-            connection.closed().await;
 
+                match Self::recv_msg(&mut recv).await {
+                    Ok(msg) => {
+                        let (_, outgoing_messages) = beelay_protocol
+                            .beelay_actor
+                            .incoming_message(msg)
+                            .await
+                            .unpack();
+                        for msg in outgoing_messages {
+                            Self::send_msg(msg, &mut send).await?;
+                        }
+                    }
+                    Err(e) => {
+                        // TODO: better error handling and ending of loop
+                        send.finish()?;
+                        connection.closed().await;
+                        break;
+                    }
+                }
+            }
             Ok(())
         })
     }
 }
 
-pub async fn start_accept_side() -> Result<iroh::protocol::Router> {
+pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayProtocol)> {
     let iroh_beelay_id = primitives::IrohBeelayID::generate();
     let endpoint = Endpoint::builder()
         .secret_key(iroh_beelay_id.clone().into())
@@ -78,11 +143,11 @@ pub async fn start_accept_side() -> Result<iroh::protocol::Router> {
     )
     .await;
     let router = iroh::protocol::Router::builder(endpoint)
-        .accept(ALPN, beelay_protocal) // This makes the router handle incoming connections with our ALPN via Echo::accept!
+        .accept(ALPN, beelay_protocal.clone()) // This makes the router handle incoming connections with our ALPN via Echo::accept!
         .spawn()
         .await?;
 
-    Ok(router)
+    Ok((router, beelay_protocal))
 }
 
 pub async fn connect_side(addr: NodeAddr) -> Result<()> {
@@ -120,16 +185,55 @@ pub async fn connect_side(addr: NodeAddr) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use beelay_core::keyhive::MemberAccess;
+    use crate::primitives::KeyhiveEntityIdWrapper;
     use super::*;
 
     #[tokio::test]
     async fn it_works() {
-        let router = start_accept_side().await.unwrap();
-        let node_addr = router.endpoint().node_addr().await.unwrap();
+        let (node_1, beelay_1) = start_beelay_node().await.unwrap();
+        let (node_2, beelay_2) = start_beelay_node().await.unwrap();
 
-        connect_side(node_addr).await.unwrap();
+        let test_content = b"test document content".to_vec();
+        let (doc_result, _) = beelay_1.beelay_actor().create_doc(test_content, vec![]).await.unpack();
+        let (document_id, initial_commit) = doc_result.expect("Failed to create document");
 
+        // 3. Create a contact card for the second actor
+        let (contact_card_result, _) = beelay_2.beelay_actor().create_contact_card().await.unpack();
+        let contact_card = contact_card_result.expect("Failed to create contact card");
+
+        // 4. Convert the contact card into a KeyhiveEntityIdWrapper of the Individual type
+        let entity_id = KeyhiveEntityIdWrapper::Individual(contact_card);
+
+        // 5. Add the second actor as a member to the document created on the first actor
+        let (_, add_member_messages) = beelay_1.beelay_actor()
+            .add_member_to_doc(document_id, entity_id, MemberAccess::Read)
+            .await
+            .unpack();
+
+        // 6. Create a stream from the first actor to the second actor
+        let target_peer_id = beelay_2.beelay_actor().peer_id();
+        let (stream_id, stream_messages) = beelay_1.beelay_actor().create_stream(target_peer_id).await.unpack();
+
+        // 7. Assert that there are outgoing messages from the stream creation
+        assert!(
+            !stream_messages.is_empty(),
+            "Expected outgoing messages from stream creation"
+        );
+        
+        let node_addr_2 = node_2.endpoint().node_addr().await.unwrap();
+        beelay_1.dial_node_and_send_messages(node_addr_2, stream_messages).await.unwrap();
+
+        let (status, _) = beelay_2.beelay_actor().doc_status(document_id).await.unpack();
+
+        assert_eq!(
+            status,
+            beelay_core::doc_status::DocStatus {
+                local_heads: Some(vec![initial_commit.hash()])
+            }
+        );
         // This makes sure the endpoint in the router is closed properly and connections close gracefully
-        router.shutdown().await.unwrap();
+        node_1.shutdown().await.unwrap();
+        node_2.shutdown().await.unwrap();
     }
 }
