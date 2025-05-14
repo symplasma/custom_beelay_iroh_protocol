@@ -150,6 +150,7 @@ pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayPr
 
 #[cfg(test)]
 mod tests {
+    use beelay_core::{Commit, CommitHash, CommitOrBundle};
     use super::*;
     use crate::primitives::KeyhiveEntityIdWrapper;
     use beelay_core::keyhive::MemberAccess;
@@ -159,7 +160,7 @@ mod tests {
         let (node_1, beelay_1) = start_beelay_node().await.unwrap();
         let (node_2, beelay_2) = start_beelay_node().await.unwrap();
 
-        let test_content = b"test document content".to_vec();
+        let test_content = Vec::new();
         let (doc_result, _) = beelay_1
             .beelay_actor()
             .create_doc(test_content, vec![])
@@ -177,7 +178,7 @@ mod tests {
         // 5. Add the second actor as a member to the document created on the first actor
         let (_, add_member_messages) = beelay_1
             .beelay_actor()
-            .add_member_to_doc(document_id, entity_id, MemberAccess::Read)
+            .add_member_to_doc(document_id, entity_id, MemberAccess::Write)
             .await
             .unpack();
 
@@ -213,6 +214,71 @@ mod tests {
                 local_heads: Some(vec![initial_commit.hash()])
             }
         );
+        println!("{:?}", status);
+        // FIXME: Initial commit is not sent to other nodes!!  this is a problem according to the beelay tests in the keyhive repo too.
+
+
+        let actual_content = vec![1, 2, 3];
+        let good_commit = Commit::new(vec![initial_commit.hash()], actual_content.clone(), CommitHash::from([1; 32]));
+
+        let (_, new_messages) = beelay_1
+            .beelay_actor()
+            .add_commits(document_id, vec![good_commit.clone()])
+            .await
+            .unpack();
+        
+        assert!(!new_messages.is_empty());
+
+        let node_addr_2 = node_2.endpoint().node_addr().await.unwrap();
+        beelay_1
+            .dial_node_and_send_messages(node_addr_2, new_messages)
+            .await
+            .unwrap();
+
+        let (commits_1, _) = beelay_1
+            .beelay_actor()
+            .load_doc(document_id)
+            .await
+            .unpack();
+        let commits_1 = commits_1
+            .unwrap()
+            .into_iter()
+            .filter_map(|com| {
+                match com {
+                    CommitOrBundle::Commit(c) => {
+                        if c.hash() == good_commit.hash() {
+                            Some(c)
+                        } else {
+                            None
+                        }
+                    },
+                    _ => None,
+                }
+            }).collect::<Vec<_>>();
+        
+        let (commits_2, _) = beelay_2
+            .beelay_actor()
+            .load_doc(document_id)
+            .await
+            .unpack();
+        let commits_2 = commits_2
+            .unwrap()
+            .into_iter()
+            .filter_map(|com| {
+                match com {
+                    CommitOrBundle::Commit(c) => {
+                        if c.hash() == good_commit.hash() {
+                            Some(c)
+                        } else {
+                            None
+                        }
+                    },
+                    _ => None,
+                }
+            }).collect::<Vec<_>>();
+        
+        assert_eq!(commits_1, commits_2);
+        
         // This makes sure the endpoint in the router is closed properly and connections close gracefully
         node_1.shutdown().await.unwrap();
         node_2.shutdown().await.unwrap();
