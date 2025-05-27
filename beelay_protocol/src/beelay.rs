@@ -21,7 +21,6 @@ use crate::storage_handling::BeelayStorage;
 
 /// This is the main entry point for building a Beelay state machine and ensuring it is either properly loaded from storage or built from scratch.
 pub struct BeelayBuilder {
-    nickname: Option<String>,
     signing_key: Option<SigningKey>,
     storage: Option<BeelayStorage>,
     recv_channel: Option<Receiver<BeelayAction>>,
@@ -31,17 +30,11 @@ pub struct BeelayBuilder {
 impl BeelayBuilder {
     pub fn new() -> Self {
         Self {
-            nickname: None,
             signing_key: None,
             storage: None,
             recv_channel: None,
             send_channel: None,
         }
-    }
-
-    pub fn nickname(mut self, nickname: String) -> Self {
-        self.nickname = Some(nickname);
-        self
     }
 
     pub fn signing_key(mut self, signing_key: SigningKey) -> Self {
@@ -78,10 +71,6 @@ impl BeelayBuilder {
         let mut signing_key = self
             .signing_key
             .unwrap_or_else(|| SigningKey::generate(&mut thread_rng()));
-        let nickname = self.nickname.unwrap_or_else(|| {
-            let verifying_key = signing_key.verifying_key();
-            hex::encode(verifying_key.as_bytes())
-        });
 
         let (recv_channel, send_channel) = if let (Some(recv_channel), Some(send_channel)) =
             (self.recv_channel, self.send_channel)
@@ -124,7 +113,6 @@ impl BeelayBuilder {
         }
         let beelay_wrapper = BeelayWrapper::generate_primed_beelay(
             signing_key,
-            &*nickname,
             beelay,
             storage,
             inbox,
@@ -136,7 +124,6 @@ impl BeelayBuilder {
 }
 
 pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
-    nickname: String,
     signing_key: SigningKey,
     storage: BeelayStorage,
     core: Beelay<R>,
@@ -158,13 +145,12 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     starting_streams: HashMap<CommandId, PeerId>,
 
     recv_channel: Receiver<BeelayAction>,
-    send_channel: Sender<BeelayAction>,
+    send_channel: Sender<BeelayAction>, // linked here in case we need a feedback mechanism
 }
 
 impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     fn generate_primed_beelay(
         signing_key: SigningKey,
-        nickname: &str,
         core: Beelay<R>,
         storage: BeelayStorage,
         inbox: VecDeque<EventData>,
@@ -172,7 +158,6 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         send_channel: Sender<BeelayAction>,
     ) -> BeelayWrapper<R> {
         let mut beelay_wrapper = Self {
-            nickname: nickname.to_string(),
             signing_key,
             storage,
             core,

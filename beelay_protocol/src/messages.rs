@@ -44,8 +44,12 @@ impl Message {
             Message::Confirmation { target } => target,
         }
     }
+    // todo: add conversion of PeerId to NodeID to allow proper message relaying in Iroh
 }
 
+/// This Message structure is used to translate non-sendable but serializable values (mostly RC issues)
+/// These are required internally to the Beelay structure, but must be sent across the wire, 
+/// requiring this new SerializableMessage structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SerializableMessage {
     Request {

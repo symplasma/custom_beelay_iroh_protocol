@@ -76,6 +76,7 @@ impl EventData {
     }
 }
 
+/// NewType wrapper that is converts contact cards to bytes so that they can be Sendable
 #[derive(Debug, Clone, Hash)]
 pub struct ContactCardWrapper(Vec<u8>);
 
@@ -100,6 +101,7 @@ impl From<ContactCardWrapper> for ContactCard {
     }
 }
 
+/// NewType wrapper that is converts KeyhiveEntityId to bytes so that they can be Sendable
 #[derive(Debug, Clone, Hash)]
 pub enum KeyhiveEntityIdWrapper {
     Individual(ContactCardWrapper),

@@ -20,13 +20,12 @@ pub struct IrohBeelayProtocol {
 
 impl IrohBeelayProtocol {
     pub async fn new(
-        nickname: &str,
         iroh_beelay_id: primitives::IrohBeelayID,
         storage: storage_handling::BeelayStorage,
         endpoint: Endpoint,
     ) -> Self {
         let beelay_actor =
-            actor::BeelayActor::spawn(nickname, iroh_beelay_id.into(), storage).await;
+            actor::BeelayActor::spawn(iroh_beelay_id.into(), storage).await;
         Self {
             beelay_actor: Arc::new(beelay_actor),
             endpoint,
@@ -112,7 +111,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             Self::send_msg(msg, &mut send).await?;
                         }
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         // TODO: better error handling and ending of loop
                         send.finish()?;
                         connection.closed().await;
@@ -134,7 +133,6 @@ pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayPr
         .await?;
 
     let beelay_protocal = IrohBeelayProtocol::new(
-        "node",
         iroh_beelay_id,
         storage_handling::BeelayStorage::new(),
         endpoint.clone(),
@@ -142,8 +140,7 @@ pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayPr
     .await;
     let router = iroh::protocol::Router::builder(endpoint)
         .accept(ALPN, beelay_protocal.clone()) // This makes the router handle incoming connections with our ALPN via Echo::accept!
-        .spawn()
-        .await?;
+        .spawn();
 
     Ok((router, beelay_protocal))
 }

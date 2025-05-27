@@ -33,7 +33,7 @@ impl<T: Debug> ActionResult<T> {
 }
 
 #[derive(Debug)]
-pub(crate) enum BeelayAction {
+pub enum BeelayAction {
     CreateDoc(
         oneshot::Sender<ActionResult<Result<(DocumentId, Commit), beelay_core::error::Create>>>,
         Vec<u8>,
@@ -68,7 +68,6 @@ pub(crate) enum BeelayAction {
 
 #[derive(Debug)]
 pub struct BeelayActor {
-    nickname: String,
     signing_key: SigningKey,
     send_channel: Sender<BeelayAction>,
     beelay_sync_handle: std::thread::JoinHandle<()>,
@@ -81,20 +80,16 @@ impl BeelayActor {
     pub fn peer_id(&self) -> PeerId {
         PeerId::from(self.signing_key.verifying_key())
     }
-    pub fn nickname(&self) -> &str {
-        &self.nickname
-    }
     pub fn send_channel(&self) -> Sender<BeelayAction> {
         self.send_channel.clone()
     }
     pub fn handle(&self) -> &std::thread::JoinHandle<()> {
         &self.beelay_sync_handle
     }
-    pub async fn spawn(nickname: &str, signing_key: SigningKey, storage: BeelayStorage) -> Self {
+    pub async fn spawn(signing_key: SigningKey, storage: BeelayStorage) -> Self {
         let (tx, rx) = mpsc::channel(100);
         let beelay_tx = tx.clone();
         let signing_key_actor = signing_key.clone();
-        let nickname_to_thread = nickname.to_string();
 
         // Spawn a dedicated thread with its own runtime for the BeelayWrapper
         let handler_thread = std::thread::spawn(move || {
@@ -111,7 +106,6 @@ impl BeelayActor {
             rt.block_on(local.run_until(async move {
                 // Create BeelayWrapper on this dedicated thread
                 let mut wrapper = BeelayBuilder::new()
-                    .nickname(nickname_to_thread)
                     .signing_key(signing_key)
                     .storage(storage)
                     .channel(tx, rx)
@@ -126,7 +120,6 @@ impl BeelayActor {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         Self {
-            nickname: nickname.to_string(),
             signing_key: signing_key_actor,
             send_channel: beelay_tx,
             beelay_sync_handle: handler_thread,
@@ -289,7 +282,6 @@ mod tests {
 
     async fn spawn_beelay_actor() -> BeelayActor {
         BeelayActor::spawn(
-            "test",
             SigningKey::generate(&mut thread_rng()),
             BTreeMap::new(),
         )
