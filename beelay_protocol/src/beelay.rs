@@ -112,15 +112,14 @@ impl BeelayBuilder {
         for result in completed_tasks {
             inbox.push_back(Event::io_complete(result));
         }
-        let beelay_wrapper = BeelayWrapper::generate_primed_beelay(
+        BeelayWrapper::generate_primed_beelay(
             signing_key,
             beelay,
             storage,
             inbox,
             recv_channel,
             send_channel,
-        );
-        beelay_wrapper
+        )
     }
 }
 
@@ -478,8 +477,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::AddMemberToDoc(reply, doc_id, member, access) => {
-                    let result = self.add_member_to_doc(doc_id, member.into(), access);
-                    let action_result = self.process_result(result);
+                    self.add_member_to_doc(doc_id, member.into(), access);
+                    let action_result = self.process_result(());
                     reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::CreateStream(reply, target) => {
@@ -503,8 +502,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::DisconnectStream(reply, stream_id) => {
-                    let result = self.disconnect(stream_id);
-                    let action_result = self.process_result(result);
+                    self.disconnect(stream_id);
+                    let action_result = self.process_result(());
                     reply.send(action_result).expect("send failed for action");
                 }
                 BeelayAction::SendMessage(reply, message) => {
