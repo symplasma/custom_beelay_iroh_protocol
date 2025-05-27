@@ -1,14 +1,14 @@
-use std::fmt::Debug;
-use tokio::sync::{mpsc, oneshot};
-use beelay_core::{BundleSpec, Commit, CommitOrBundle, DocumentId, PeerId, StreamId};
-use beelay_core::error::{AddCommits, CreateContactCard};
-use beelay_core::keyhive::MemberAccess;
-use ed25519_dalek::SigningKey;
-use tokio::sync::mpsc::Sender;
 use crate::beelay::BeelayBuilder;
 use crate::messages::Message;
 use crate::primitives::{ContactCardWrapper, KeyhiveEntityIdWrapper};
 use crate::storage_handling::BeelayStorage;
+use beelay_core::error::{AddCommits, CreateContactCard};
+use beelay_core::keyhive::MemberAccess;
+use beelay_core::{BundleSpec, Commit, CommitOrBundle, DocumentId, PeerId, StreamId};
+use ed25519_dalek::SigningKey;
+use std::fmt::Debug;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub struct ActionResult<T: Debug> {
@@ -125,14 +125,16 @@ impl BeelayActor {
             beelay_sync_handle: handler_thread,
         }
     }
-    
+
     pub async fn incoming_message(&self, msg: Message) -> ActionResult<()> {
         let (sender, receiver) = oneshot::channel();
         self.send_channel
             .send(BeelayAction::SendMessage(sender, msg))
             .await
             .unwrap();
-        receiver.await.expect("Failed to get response from sent message")
+        receiver
+            .await
+            .expect("Failed to get response from sent message")
     }
 
     pub async fn display_storage(&self) {
@@ -269,23 +271,19 @@ impl BeelayActor {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::pin::Pin;
-    use beelay_core::{Commit, CommitHash};
-    use beelay_core::keyhive::MemberAccess;
-    use ed25519_dalek::SigningKey;
-    use rand::thread_rng;
-    use tokio::sync::oneshot;
     use crate::actor::{BeelayAction, BeelayActor};
     use crate::messages::Message;
     use crate::primitives::KeyhiveEntityIdWrapper;
+    use beelay_core::keyhive::MemberAccess;
+    use beelay_core::{Commit, CommitHash};
+    use ed25519_dalek::SigningKey;
+    use rand::thread_rng;
+    use std::collections::BTreeMap;
+    use std::pin::Pin;
+    use tokio::sync::oneshot;
 
     async fn spawn_beelay_actor() -> BeelayActor {
-        BeelayActor::spawn(
-            SigningKey::generate(&mut thread_rng()),
-            BTreeMap::new(),
-        )
-        .await
+        BeelayActor::spawn(SigningKey::generate(&mut thread_rng()), BTreeMap::new()).await
     }
 
     #[tokio::test]
@@ -385,7 +383,10 @@ mod tests {
 
         // Verify the contact card was created successfully
         // We can't check the exact content but we can verify it exists
-        assert!(contact_card.to_bytes().len() > 0, "Contact card should not be empty");
+        assert!(
+            contact_card.to_bytes().len() > 0,
+            "Contact card should not be empty"
+        );
     }
 
     #[tokio::test]

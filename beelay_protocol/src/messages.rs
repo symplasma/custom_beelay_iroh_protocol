@@ -48,7 +48,7 @@ impl Message {
 }
 
 /// This Message structure is used to translate non-sendable but serializable values (mostly RC issues)
-/// These are required internally to the Beelay structure, but must be sent across the wire, 
+/// These are required internally to the Beelay structure, but must be sent across the wire,
 /// requiring this new SerializableMessage structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SerializableMessage {
@@ -85,42 +85,55 @@ pub enum SerializableMessage {
 impl From<Message> for SerializableMessage {
     fn from(value: Message) -> Self {
         match value {
-            Message::Request { source, target, senders_req_id, request } => {
-                Self::Request {
-                    source: source.as_bytes().to_vec(),
-                    target: target.as_bytes().to_vec(),
-                    senders_req_id: senders_req_id.serialize(),
-                    request,
-                }
-            }
-            Message::Response { source, target, id, response } => {
-                Self::Response {
-                    source: source.as_bytes().to_vec(),
-                    target: target.as_bytes().to_vec(),
-                    id: id.serialize(),
-                    response,
-                }
-            }
-            Message::Stream { source, target, stream_id_source, stream_id_target, msg } => {
-                Self::Stream {
-                    source: source.as_bytes().to_vec(),
-                    target: target.as_bytes().to_vec(),
-                    stream_id_source: stream_id_source.serialize(),
-                    stream_id_target: stream_id_target.serialize(),
-                    msg,
-                }
-            }
-            Message::StreamConnect { source, target, stream_id_source, msg } => {
-                Self::StreamConnect {
-                    source: source.as_bytes().to_vec(),
-                    target: target.as_bytes().to_vec(),
-                    stream_id_source: stream_id_source.serialize(),
-                    msg,
-                }
-            }
-            Message::Confirmation { target } => {
-                Self::Confirmation { target: target.as_bytes().to_vec() }
-            }
+            Message::Request {
+                source,
+                target,
+                senders_req_id,
+                request,
+            } => Self::Request {
+                source: source.as_bytes().to_vec(),
+                target: target.as_bytes().to_vec(),
+                senders_req_id: senders_req_id.serialize(),
+                request,
+            },
+            Message::Response {
+                source,
+                target,
+                id,
+                response,
+            } => Self::Response {
+                source: source.as_bytes().to_vec(),
+                target: target.as_bytes().to_vec(),
+                id: id.serialize(),
+                response,
+            },
+            Message::Stream {
+                source,
+                target,
+                stream_id_source,
+                stream_id_target,
+                msg,
+            } => Self::Stream {
+                source: source.as_bytes().to_vec(),
+                target: target.as_bytes().to_vec(),
+                stream_id_source: stream_id_source.serialize(),
+                stream_id_target: stream_id_target.serialize(),
+                msg,
+            },
+            Message::StreamConnect {
+                source,
+                target,
+                stream_id_source,
+                msg,
+            } => Self::StreamConnect {
+                source: source.as_bytes().to_vec(),
+                target: target.as_bytes().to_vec(),
+                stream_id_source: stream_id_source.serialize(),
+                msg,
+            },
+            Message::Confirmation { target } => Self::Confirmation {
+                target: target.as_bytes().to_vec(),
+            },
         }
     }
 }
@@ -128,42 +141,64 @@ impl From<Message> for SerializableMessage {
 impl From<SerializableMessage> for Message {
     fn from(value: SerializableMessage) -> Self {
         match value {
-            SerializableMessage::Request { source, target, senders_req_id, request } => {
-                Self::Request {
-                    source: PeerId::try_from(source.as_ref()).expect("peer id should succeed unless corrupted"),
-                    target: PeerId::try_from(target.as_ref()).expect("peer id should succeed unless corrupted"),
-                    senders_req_id: OutboundRequestId::from_serialized(senders_req_id),
-                    request,
-                }
-            }
-            SerializableMessage::Response { source, target, id, response } => {
-                Self::Response {
-                    source: PeerId::try_from(source.as_ref()).expect("peer id should succeed unless corrupted"),
-                    target: PeerId::try_from(target.as_ref()).expect("peer id should succeed unless corrupted"),
-                    id: OutboundRequestId::from_serialized(id),
-                    response,
-                }
-            }
-            SerializableMessage::Stream { source, target, stream_id_source, stream_id_target, msg } => {
-                Self::Stream {
-                    source: PeerId::try_from(source.as_ref()).expect("peer id should succeed unless corrupted"),
-                    target: PeerId::try_from(target.as_ref()).expect("peer id should succeed unless corrupted"),
-                    stream_id_source: StreamId::from_serialized(stream_id_source),
-                    stream_id_target: StreamId::from_serialized(stream_id_target),
-                    msg,
-                }
-            }
-            SerializableMessage::StreamConnect { source, target, stream_id_source, msg } => {
-                Self::StreamConnect {
-                    source: PeerId::try_from(source.as_ref()).expect("peer id should succeed unless corrupted"),
-                    target: PeerId::try_from(target.as_ref()).expect("peer id should succeed unless corrupted"),
-                    stream_id_source: StreamId::from_serialized(stream_id_source),
-                    msg,
-                }
-            }
-            SerializableMessage::Confirmation { target } => {
-                Self::Confirmation { target: PeerId::try_from(target.as_ref()).expect("peer id should succeed unless corrupted") }
-            }
+            SerializableMessage::Request {
+                source,
+                target,
+                senders_req_id,
+                request,
+            } => Self::Request {
+                source: PeerId::try_from(source.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                target: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                senders_req_id: OutboundRequestId::from_serialized(senders_req_id),
+                request,
+            },
+            SerializableMessage::Response {
+                source,
+                target,
+                id,
+                response,
+            } => Self::Response {
+                source: PeerId::try_from(source.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                target: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                id: OutboundRequestId::from_serialized(id),
+                response,
+            },
+            SerializableMessage::Stream {
+                source,
+                target,
+                stream_id_source,
+                stream_id_target,
+                msg,
+            } => Self::Stream {
+                source: PeerId::try_from(source.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                target: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                stream_id_source: StreamId::from_serialized(stream_id_source),
+                stream_id_target: StreamId::from_serialized(stream_id_target),
+                msg,
+            },
+            SerializableMessage::StreamConnect {
+                source,
+                target,
+                stream_id_source,
+                msg,
+            } => Self::StreamConnect {
+                source: PeerId::try_from(source.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                target: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                stream_id_source: StreamId::from_serialized(stream_id_source),
+                msg,
+            },
+            SerializableMessage::Confirmation { target } => Self::Confirmation {
+                target: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+            },
         }
     }
 }

@@ -1,23 +1,23 @@
+use crate::actor::{ActionResult, BeelayAction};
+use crate::messages::Message;
+use crate::primitives::StreamState;
+use crate::storage_handling;
+use crate::storage_handling::BeelayStorage;
 use beelay_core::contact_card::ContactCard;
 use beelay_core::error::{AddCommits, CreateContactCard};
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
 use beelay_core::{
-    conn_info, Beelay, BundleSpec, CommandId, CommandResult, Commit, CommitHash, CommitOrBundle,
-    Config, DocumentId, Event, OutboundRequestId, PeerId, StreamDirection, StreamId,
-    UnixTimestampMillis,
+    Beelay, BundleSpec, CommandId, CommandResult, Commit, CommitHash, CommitOrBundle, Config,
+    DocumentId, Event, OutboundRequestId, PeerId, StreamDirection, StreamId, UnixTimestampMillis,
+    conn_info,
 };
-use ed25519_dalek::{SigningKey};
+use ed25519_dalek::SigningKey;
 use rand::prelude::ThreadRng;
 use rand::thread_rng;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use crate::actor::{ActionResult, BeelayAction};
-use crate::messages::Message;
-use crate::primitives::StreamState;
-use crate::storage_handling;
-use crate::storage_handling::BeelayStorage;
 
 /// This is the main entry point for building a Beelay state machine and ensuring it is either properly loaded from storage or built from scratch.
 pub struct BeelayBuilder {
@@ -89,7 +89,8 @@ impl BeelayBuilder {
             match step {
                 beelay_core::loading::Step::Loading(loading, io_tasks) => {
                     for task in io_tasks {
-                        let result = storage_handling::handle_task(&mut storage, &mut signing_key, task);
+                        let result =
+                            storage_handling::handle_task(&mut storage, &mut signing_key, task);
                         completed_tasks.push(result);
                     }
                     if let Some(task_result) = completed_tasks.pop() {
@@ -101,7 +102,8 @@ impl BeelayBuilder {
                 }
                 beelay_core::loading::Step::Loaded(beelay, io_tasks) => {
                     for task in io_tasks {
-                        let result = storage_handling::handle_task(&mut storage, &mut signing_key, task);
+                        let result =
+                            storage_handling::handle_task(&mut storage, &mut signing_key, task);
                         completed_tasks.push(result);
                     }
                     break beelay;
@@ -589,4 +591,3 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         }
     }
 }
-

@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
-use ed25519_dalek::SigningKey;
 use beelay_core::io::{IoAction, IoResult};
+use ed25519_dalek::SigningKey;
 use signature::SignerMut;
+use std::collections::BTreeMap;
 
 pub type BeelayStorage = BTreeMap<beelay_core::StorageKey, Vec<u8>>;
 

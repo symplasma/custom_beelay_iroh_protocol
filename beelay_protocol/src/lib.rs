@@ -6,7 +6,7 @@ mod storage_handling;
 
 use anyhow::Result;
 use iroh::endpoint::{RecvStream, SendStream};
-use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint, NodeAddr};
+use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
 use std::sync::Arc;
 
@@ -24,8 +24,7 @@ impl IrohBeelayProtocol {
         storage: storage_handling::BeelayStorage,
         endpoint: Endpoint,
     ) -> Self {
-        let beelay_actor =
-            actor::BeelayActor::spawn(iroh_beelay_id.into(), storage).await;
+        let beelay_actor = actor::BeelayActor::spawn(iroh_beelay_id.into(), storage).await;
         Self {
             beelay_actor: Arc::new(beelay_actor),
             endpoint,
