@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use crate::actor::{ActionResult, BeelayAction};
 use crate::messages::Message;
-use crate::primitives::{EventData, StreamState};
+use crate::primitives::StreamState;
 use crate::storage_handling;
 use crate::storage_handling::BeelayStorage;
 
@@ -109,7 +109,7 @@ impl BeelayBuilder {
             }
         };
         for result in completed_tasks {
-            inbox.push_back(EventData::Event(Event::io_complete(result)));
+            inbox.push_back(Event::io_complete(result));
         }
         let beelay_wrapper = BeelayWrapper::generate_primed_beelay(
             signing_key,
@@ -129,7 +129,7 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     core: Beelay<R>,
 
     outbox: Vec<Message>,
-    inbox: VecDeque<EventData>,
+    inbox: VecDeque<Event>,
 
     completed_commands: HashMap<CommandId, Result<CommandResult, beelay_core::error::Stopping>>,
 
@@ -153,7 +153,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         signing_key: SigningKey,
         core: Beelay<R>,
         storage: BeelayStorage,
-        inbox: VecDeque<EventData>,
+        inbox: VecDeque<Event>,
         recv_channel: Receiver<BeelayAction>,
         send_channel: Sender<BeelayAction>,
     ) -> BeelayWrapper<R> {
@@ -188,7 +188,6 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             return;
         }
         while let Some(event) = self.inbox.pop_front() {
-            let event = event.into_event();
             let now = UnixTimestampMillis::now();
             let results = {
                 self.core
@@ -197,7 +196,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             };
             for task in results.new_tasks.into_iter() {
                 let event = self.handle_task(task);
-                self.inbox.push_back(EventData::Event(event));
+                self.inbox.push_back(event);
             }
 
             for (command, result) in results.completed_commands.into_iter() {
@@ -298,7 +297,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         let initial_commit = Commit::new(vec![], content, hash);
         let command = {
             let (command, event) = Event::create_doc(initial_commit.clone(), other_owners);
-            self.inbox.push_back(EventData::Event(event));
+            self.inbox.push_back(event);
             self.handle_events();
             command
         };
@@ -322,7 +321,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn load_doc(&mut self, doc_id: DocumentId) -> Option<Vec<CommitOrBundle>> {
         let command = {
             let (command, event) = Event::load_doc(doc_id);
-            self.inbox.push_back(EventData::Event(event));
+            self.inbox.push_back(event);
             command
         };
         self.handle_events();
@@ -335,7 +334,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
 
     pub fn contact_card(&mut self) -> Result<ContactCard, CreateContactCard> {
         let (command_id, event) = Event::create_contact_card();
-        self.inbox.push_back(EventData::Event(event));
+        self.inbox.push_back(event);
         self.handle_events();
 
         match self.completed_commands.remove(&command_id) {
@@ -352,7 +351,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         access: MemberAccess,
     ) {
         let (command_id, event) = Event::add_member_to_doc(doc, member, access);
-        self.inbox.push_back(EventData::Event(event));
+        self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command_id) {
             Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::AddMemberToDoc))) => (),
@@ -364,7 +363,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn create_stream(&mut self, target: &PeerId, direction: StreamDirection) -> StreamId {
         let (command, event) = Event::create_stream(direction);
         self.starting_streams.insert(command, *target);
-        self.inbox.push_back(EventData::Event(event));
+        self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command) {
             Some(Ok(CommandResult::CreateStream(stream_id))) => stream_id,
@@ -383,7 +382,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     ) -> Result<Vec<BundleSpec>, AddCommits> {
         let command = {
             let (command, event) = Event::add_commits(doc_id, commits);
-            self.inbox.push_back(EventData::Event(event));
+            self.inbox.push_back(event);
             command
         };
         self.handle_events();
@@ -397,7 +396,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn doc_status(&mut self, doc: &DocumentId) -> beelay_core::doc_status::DocStatus {
         let command = {
             let (command, event) = Event::query_status(*doc);
-            self.inbox.push_back(EventData::Event(event));
+            self.inbox.push_back(event);
             command
         };
         self.handle_events();
@@ -411,7 +410,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
 
     pub fn disconnect(&mut self, stream: StreamId) {
         let (command_id, event) = Event::disconnect_stream(stream);
-        self.inbox.push_back(EventData::Event(event));
+        self.inbox.push_back(event);
 
         self.handle_events();
 
@@ -425,7 +424,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn register_endpoint(&mut self, other: &PeerId) -> beelay_core::EndpointId {
         let command = {
             let (command, event) = Event::register_endpoint(beelay_core::Audience::peer(other));
-            self.inbox.push_back(EventData::Event(event));
+            self.inbox.push_back(event);
             command
         };
         self.handle_events();
@@ -536,9 +535,8 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 request,
             } => {
                 let signed_message = beelay_core::SignedMessage::decode(&request).unwrap();
-                let (command_id, event) = Event::handle_request(signed_message, None);
-                let event_data = EventData::RequestEvent(command_id, event, senders_req_id, target);
-                self.inbox.push_back(event_data);
+                let (_command_id, event) = Event::handle_request(signed_message, None);
+                self.inbox.push_back(event);
             }
             Message::Response {
                 source,
@@ -548,8 +546,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             } => {
                 let response = beelay_core::EndpointResponse::decode(&response).unwrap();
                 let (_command_id, event) = Event::handle_response(id, response);
-                let event_data = EventData::Event(event);
-                self.inbox.push_back(event_data);
+                self.inbox.push_back(event);
             }
             Message::StreamConnect {
                 source,
@@ -570,8 +567,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 stream_state.set_target_stream_id(stream_id_source);
 
                 let event = Event::handle_message(accepting_stream_id, msg);
-                let event_data = EventData::StreamEvent(accepting_stream_id, event);
-                self.inbox.push_back(event_data)
+                self.inbox.push_back(event)
             }
             Message::Stream {
                 source,
@@ -587,8 +583,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     .expect("stream state should exist");
                 stream_state.set_target_stream_id(stream_id_source);
                 let event = Event::handle_message(stream_id_target, msg);
-                let event_data = EventData::StreamEvent(stream_id_target, event);
-                self.inbox.push_back(event_data);
+                self.inbox.push_back(event);
             }
             Message::Confirmation { .. } => {}
         }

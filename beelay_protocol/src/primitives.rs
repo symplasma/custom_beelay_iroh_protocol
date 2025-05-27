@@ -1,10 +1,10 @@
-use beelay_core::keyhive::KeyhiveEntityId;
-use iroh::{NodeId, SecretKey};
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::thread_rng;
-use beelay_core::{CommandId, DocumentId, Event, OutboundRequestId, PeerId, StreamId};
-use std::fmt::Debug;
 use beelay_core::contact_card::ContactCard;
+use beelay_core::keyhive::KeyhiveEntityId;
+use beelay_core::{CommandId, DocumentId, Event, OutboundRequestId, PeerId, StreamId};
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use iroh::{NodeId, SecretKey};
+use rand::thread_rng;
+use std::fmt::Debug;
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -56,23 +56,6 @@ impl From<IrohBeelayID> for NodeId {
 impl From<IrohBeelayID> for PeerId {
     fn from(value: IrohBeelayID) -> Self {
         value.0.verifying_key().into()
-    }
-}
-
-/// A wrapper for `beelay_core::Event` so that we can include additional context to process command results and build outgoing network messages.
-pub enum EventData {
-    Event(Event),
-    RequestEvent(CommandId, Event, OutboundRequestId, PeerId),
-    StreamEvent(StreamId, Event),
-}
-
-impl EventData {
-    pub(crate) fn into_event(self) -> Event {
-        match self {
-            EventData::Event(event) => event,
-            EventData::RequestEvent(command_id, event, _, _) => event,
-            EventData::StreamEvent(stream_id, event) => event,
-        }
     }
 }
 
@@ -138,7 +121,7 @@ impl StreamState {
             target_stream_id: None,
         }
     }
-    pub(crate)fn set_target_stream_id(&mut self, target_stream_id: StreamId) {
+    pub(crate) fn set_target_stream_id(&mut self, target_stream_id: StreamId) {
         self.target_stream_id = Some(target_stream_id);
     }
     pub(crate) fn target_peer_id(&self) -> PeerId {
