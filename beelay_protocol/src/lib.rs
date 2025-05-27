@@ -8,6 +8,7 @@ use anyhow::Result;
 use iroh::endpoint::{RecvStream, SendStream};
 use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 pub const ALPN: &[u8] = b"beelay/1";
@@ -60,9 +61,14 @@ impl IrohBeelayProtocol {
     ) -> Result<()> {
         for msg in messages {
             Self::send_msg(msg, send).await?;
-            let respond = Self::recv_msg(recv).await?;
-            let (_, messages) = self.beelay_actor.incoming_message(respond).await.unpack();
-            Box::pin(self.send_messages(messages, send, recv)).await?;
+            loop {
+                let respond = Self::recv_msg(recv).await?;
+                if let messages::Message::Done { .. } = respond {
+                    break;
+                };
+                let (_, messages) = self.beelay_actor.incoming_message(respond).await.unpack();
+                Box::pin(self.send_messages(messages, send, recv)).await?;
+            }
         }
         Ok(())
     }
@@ -92,6 +98,7 @@ impl IrohBeelayProtocol {
 impl ProtocolHandler for IrohBeelayProtocol {
     fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {
         let beelay_protocol = self.clone();
+        let source_peer_id = beelay_protocol.beelay_actor.peer_id();
         Box::pin(async move {
             let node_id = connection.remote_node_id()?;
             println!("accepted connection from {node_id}");
@@ -105,9 +112,42 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             .incoming_message(msg)
                             .await
                             .unpack();
-                        for msg in outgoing_messages {
-                            //TODO: need to be able to dial out to other nodes if needed based on the target in the messages
-                            Self::send_msg(msg, &mut send).await?;
+                        let mut handles = Vec::new();
+                        for (key, group) in outgoing_messages
+                            .into_iter()
+                            .fold(HashMap::new(), |mut acc, m| {
+                                let target_node_id = m.target_node_id();
+                                acc.entry(target_node_id).or_insert_with(Vec::new).push(m);
+                                acc
+                            })
+                            .into_iter()
+                        {
+                            if key == node_id {
+                                for msg in group {
+                                    Self::send_msg(msg, &mut send).await?;
+                                }
+                            } else {
+                                // send out to other nodes, create connections to do so
+                                let new_beelay_protocol = beelay_protocol.clone();
+                                let task = tokio::spawn(async move {
+                                    new_beelay_protocol
+                                        .dial_node_and_send_messages(key.into(), group)
+                                        .await
+                                });
+                                handles.push(task);
+                            }
+                        }
+                        // Send Done message so sender can terminate loop for this chunk of outgoing
+                        Self::send_msg(
+                            messages::Message::Done {
+                                source: source_peer_id,
+                            },
+                            &mut send,
+                        )
+                        .await?;
+                        for h in handles {
+                            // not ideal for the time being, but this allows us to propagate up errors to the calling function
+                            h.await??;
                         }
                     }
                     Err(_e) => {

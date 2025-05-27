@@ -61,7 +61,6 @@ impl BeelayBuilder {
         let mut storage = match self.storage {
             Some(storage) => {
                 if self.signing_key.is_none() {
-                    // TODO: turn this into a proper error
                     panic!("signing key must be provided when loading from storage");
                 }
                 storage
@@ -130,7 +129,7 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     storage: BeelayStorage,
     core: Beelay<R>,
 
-    outbox: Vec<Message>,
+    outbox: VecDeque<Message>,
     inbox: VecDeque<Event>,
 
     completed_commands: HashMap<CommandId, Result<CommandResult, beelay_core::error::Stopping>>,
@@ -163,7 +162,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             signing_key,
             storage,
             core,
-            outbox: Vec::new(),
+            outbox: VecDeque::new(),
             inbox,
             completed_commands: HashMap::new(),
             notifications: HashMap::new(),
@@ -215,7 +214,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                         continue;
                     };
                     if let Some((sender_req_id, sender)) = self.handling_requests.remove(&command) {
-                        self.outbox.push(Message::Response {
+                        self.outbox.push_back(Message::Response {
                             source: self.peer_id(),
                             target: sender,
                             id: sender_req_id,
@@ -228,7 +227,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             for (target, msgs) in results.new_requests {
                 let peer_id = self.endpoints.get(&target).expect("endpoint doesn't exist");
                 for msg in msgs {
-                    self.outbox.push(Message::Request {
+                    self.outbox.push_back(Message::Request {
                         source: self.peer_id(),
                         target: *peer_id,
                         senders_req_id: msg.id,
@@ -259,7 +258,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                                         msg,
                                     }
                                 };
-                            self.outbox.push(outgoing_message);
+                            self.outbox.push_back(outgoing_message);
                         }
                         beelay_core::StreamEvent::Close => {
                             self.streams.remove(&id);
@@ -568,8 +567,29 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     .expect("stream state should exist");
                 stream_state.set_target_stream_id(stream_id_source);
 
+                // need to send a stream Accepted message to give the other end this side's stream id
+                let accepted = Message::StreamAccept {
+                    source: target,
+                    target: source,
+                    stream_id_source: accepting_stream_id,
+                    stream_id_target: stream_id_source,
+                };
+                self.outbox.push_front(accepted);
+
                 let event = Event::handle_message(accepting_stream_id, msg);
                 self.inbox.push_back(event)
+            }
+            Message::StreamAccept {
+                source,
+                target,
+                stream_id_source,
+                stream_id_target,
+            } => {
+                let stream_state = self
+                    .streams
+                    .get_mut(&stream_id_target)
+                    .expect("stream state should exist");
+                stream_state.set_target_stream_id(stream_id_source);
             }
             Message::Stream {
                 source,
@@ -578,16 +598,11 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 stream_id_target,
                 msg,
             } => {
-                // TODO: we are always setting this target stream id, we should be able to make this more with an accept state, let's do that later.
-                let stream_state = self
-                    .streams
-                    .get_mut(&stream_id_target)
-                    .expect("stream state should exist");
-                stream_state.set_target_stream_id(stream_id_source);
                 let event = Event::handle_message(stream_id_target, msg);
                 self.inbox.push_back(event);
             }
-            Message::Confirmation { .. } => {}
+            Message::Confirmation { .. } => {} // for potential later usage for negotiating external events
+            _ => unimplemented!(),
         }
     }
 }

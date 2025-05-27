@@ -1,4 +1,5 @@
 use beelay_core::{OutboundRequestId, PeerId, StreamId};
+use iroh::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// Messages are used to send data over Iroh connections and reconcile Beelay commands that must be sent to other peers.
@@ -29,6 +30,15 @@ pub enum Message {
         stream_id_source: StreamId,
         msg: Vec<u8>,
     },
+    StreamAccept {
+        source: PeerId,
+        target: PeerId,
+        stream_id_source: StreamId,
+        stream_id_target: StreamId,
+    },
+    Done {
+        source: PeerId,
+    },
     Confirmation {
         target: PeerId,
     },
@@ -41,10 +51,16 @@ impl Message {
             Message::Response { target, .. } => target,
             Message::Stream { target, .. } => target,
             Message::StreamConnect { target, .. } => target,
+            Message::StreamAccept { target, .. } => target,
+            Message::Done { source: target } => target,
             Message::Confirmation { target } => target,
         }
     }
-    // todo: add conversion of PeerId to NodeID to allow proper message relaying in Iroh
+
+    pub fn target_node_id(&self) -> NodeId {
+        let peer_id = self.target().as_bytes();
+        NodeId::try_from(peer_id).expect("NodeId is invalid")
+    }
 }
 
 /// This Message structure is used to translate non-sendable but serializable values (mostly RC issues)
@@ -76,6 +92,15 @@ pub enum SerializableMessage {
         target: Vec<u8>,
         stream_id_source: u64,
         msg: Vec<u8>,
+    },
+    StreamAccept {
+        source: Vec<u8>,
+        target: Vec<u8>,
+        stream_id_source: u64,
+        stream_id_target: u64,
+    },
+    Done {
+        source: Vec<u8>,
     },
     Confirmation {
         target: Vec<u8>,
@@ -130,6 +155,20 @@ impl From<Message> for SerializableMessage {
                 target: target.as_bytes().to_vec(),
                 stream_id_source: stream_id_source.serialize(),
                 msg,
+            },
+            Message::StreamAccept {
+                source,
+                target,
+                stream_id_source,
+                stream_id_target,
+            } => Self::StreamAccept {
+                source: source.as_bytes().to_vec(),
+                target: target.as_bytes().to_vec(),
+                stream_id_source: stream_id_source.serialize(),
+                stream_id_target: stream_id_target.serialize(),
+            },
+            Message::Done { source: target } => Self::Done {
+                source: target.as_bytes().to_vec(),
             },
             Message::Confirmation { target } => Self::Confirmation {
                 target: target.as_bytes().to_vec(),
@@ -194,6 +233,23 @@ impl From<SerializableMessage> for Message {
                     .expect("peer id should succeed unless corrupted"),
                 stream_id_source: StreamId::from_serialized(stream_id_source),
                 msg,
+            },
+            SerializableMessage::StreamAccept {
+                source,
+                target,
+                stream_id_source,
+                stream_id_target,
+            } => Self::StreamAccept {
+                source: PeerId::try_from(source.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                target: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
+                stream_id_source: StreamId::from_serialized(stream_id_source),
+                stream_id_target: StreamId::from_serialized(stream_id_target),
+            },
+            SerializableMessage::Done { source: target } => Self::Done {
+                source: PeerId::try_from(target.as_ref())
+                    .expect("peer id should succeed unless corrupted"),
             },
             SerializableMessage::Confirmation { target } => Self::Confirmation {
                 target: PeerId::try_from(target.as_ref())

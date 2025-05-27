@@ -6,6 +6,7 @@ use beelay_core::error::{AddCommits, CreateContactCard};
 use beelay_core::keyhive::MemberAccess;
 use beelay_core::{BundleSpec, Commit, CommitOrBundle, DocumentId, PeerId, StreamId};
 use ed25519_dalek::SigningKey;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, oneshot};
@@ -17,8 +18,11 @@ pub struct ActionResult<T: Debug> {
 }
 
 impl<T: Debug> ActionResult<T> {
-    pub(crate) fn new(result: T, messages: Vec<Message>) -> Self {
-        Self { result, messages }
+    pub(crate) fn new(result: T, messages: VecDeque<Message>) -> Self {
+        Self {
+            result,
+            messages: Vec::from(messages),
+        }
     }
 
     pub(crate) fn unpack(self) -> (T, Vec<Message>) {
