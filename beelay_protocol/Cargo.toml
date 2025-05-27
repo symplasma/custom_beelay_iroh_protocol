@@ -9,12 +9,10 @@ n0-future = "0.1.3"
 postcard = "1.0.8"
 serde = { version = "1.0.197", features = ["derive"] }
 tokio = { version = "1.36.0", features = ["full"] }
-beelay-core = {git = "https://github.com/Zyell/keyhive.git", branch = "main", package = "beelay-core"}
-keyhive_core = {git = "https://github.com/Zyell/keyhive.git", branch = "main", package = "keyhive_core"}
+beelay-core = {git = "https://github.com/Zyell/keyhive.git", branch = "main"}
 anyhow = "1.0.92"
 signature = "2.2.0"
 ed25519-dalek = "2.1.1"
 blake3 = "1.8.2"
 rand = "0.8.5"
 tracing = "0.1.41"
-hex = "0.4.3"

@@ -1,6 +1,6 @@
 use beelay_core::contact_card::ContactCard;
 use beelay_core::keyhive::KeyhiveEntityId;
-use beelay_core::{CommandId, DocumentId, Event, OutboundRequestId, PeerId, StreamId};
+use beelay_core::{DocumentId, PeerId, StreamId};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::{NodeId, SecretKey};
 use rand::thread_rng;
@@ -64,10 +64,10 @@ impl From<IrohBeelayID> for PeerId {
 pub struct ContactCardWrapper(Vec<u8>);
 
 impl ContactCardWrapper {
-    pub(crate) fn to_bytes(&self) -> &[u8] {
+    pub fn to_bytes(&self) -> &[u8] {
         &self.0
     }
-    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, beelay_core::error::Create> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, beelay_core::error::Create> {
         Ok(Self(bytes.to_vec()))
     }
 }

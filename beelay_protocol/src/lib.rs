@@ -235,36 +235,28 @@ mod tests {
             .unwrap();
 
         let (commits_1, _) = beelay_1.beelay_actor().load_doc(document_id).await.unpack();
-        let commits_1 = commits_1
-            .unwrap()
-            .into_iter()
-            .filter_map(|com| match com {
-                CommitOrBundle::Commit(c) => {
-                    if c.hash() == good_commit.hash() {
-                        Some(c)
-                    } else {
-                        None
+
+        let commit_filter = |commits: Option<Vec<CommitOrBundle>>| {
+            commits
+                .unwrap()
+                .into_iter()
+                .filter_map(|com| match com {
+                    CommitOrBundle::Commit(c) => {
+                        if c.hash() == good_commit.hash() {
+                            Some(c)
+                        } else {
+                            None
+                        }
                     }
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let commits_1 = commit_filter(commits_1);
 
         let (commits_2, _) = beelay_2.beelay_actor().load_doc(document_id).await.unpack();
-        let commits_2 = commits_2
-            .unwrap()
-            .into_iter()
-            .filter_map(|com| match com {
-                CommitOrBundle::Commit(c) => {
-                    if c.hash() == good_commit.hash() {
-                        Some(c)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let commits_2 = commit_filter(commits_2);
 
         assert_eq!(commits_1, commits_2);
 
