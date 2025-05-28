@@ -1,10 +1,11 @@
 use beelay_core::contact_card::ContactCard;
-use beelay_core::keyhive::KeyhiveEntityId;
+use beelay_core::keyhive::{KeyhiveEntityId, MemberAccess};
 use beelay_core::{DocumentId, PeerId, StreamId};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::{NodeId, SecretKey};
 use rand::thread_rng;
 use std::fmt::Debug;
+use std::ops::Add;
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -102,6 +103,39 @@ impl From<KeyhiveEntityIdWrapper> for KeyhiveEntityId {
             KeyhiveEntityIdWrapper::Group(peer_id) => KeyhiveEntityId::Group(peer_id.into()),
             KeyhiveEntityIdWrapper::Doc(doc_id) => KeyhiveEntityId::Doc(doc_id.into()),
             KeyhiveEntityIdWrapper::Public => KeyhiveEntityId::Public,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct AddMemberToGroupWrapper {
+    pub group_id: PeerId,
+    pub member: KeyhiveEntityIdWrapper,
+    pub access: MemberAccess,
+}
+
+impl From<AddMemberToGroupWrapper> for beelay_core::keyhive::AddMemberToGroup {
+    fn from(value: AddMemberToGroupWrapper) -> Self {
+        Self {
+            group_id: value.group_id,
+            member: value.member.into(),
+            access: value.access,
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Hash)]
+pub struct RemoveMemberFromGroupWrapper {
+    pub group_id: PeerId,
+    pub member: KeyhiveEntityIdWrapper,
+}
+
+impl From<RemoveMemberFromGroupWrapper> for beelay_core::keyhive::RemoveMemberFromGroup {
+    fn from(value: RemoveMemberFromGroupWrapper) -> Self {
+        Self {
+            group_id: value.group_id,
+            member: value.member.into(),
         }
     }
 }

@@ -1,12 +1,12 @@
 use crate::beelay::BeelayBuilder;
 use crate::messages::Message;
-use crate::primitives::{ContactCardWrapper, KeyhiveEntityIdWrapper};
+use crate::primitives::{AddMemberToGroupWrapper, ContactCardWrapper, KeyhiveEntityIdWrapper, RemoveMemberFromGroupWrapper};
 use crate::storage_handling::BeelayStorage;
-use beelay_core::error::{AddCommits, CreateContactCard};
-use beelay_core::keyhive::MemberAccess;
+use beelay_core::error::{AddCommits, CreateContactCard, RemoveMember};
+use beelay_core::keyhive::{KeyhiveEntityId, MemberAccess};
 use beelay_core::{BundleSpec, Commit, CommitOrBundle, DocumentId, PeerId, StreamId};
 use ed25519_dalek::SigningKey;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, oneshot};
@@ -63,11 +63,34 @@ pub enum BeelayAction {
         KeyhiveEntityIdWrapper,
         MemberAccess,
     ),
+    RemoveMemberFromDoc(
+        oneshot::Sender<ActionResult<Result<(), beelay_core::error::RemoveMember>>>,
+        DocumentId,
+        KeyhiveEntityIdWrapper,
+    ),
+    CreateGroup(
+        oneshot::Sender<ActionResult<Result<PeerId, beelay_core::error::CreateGroup>>>,
+        Vec<KeyhiveEntityIdWrapper>,
+    ),
+    AddMemberToGroup(
+        oneshot::Sender<ActionResult<Result<(), beelay_core::error::AddMember>>>,
+        AddMemberToGroupWrapper,
+    ),
+    RemoveMemberFromGroup(
+        oneshot::Sender<ActionResult<Result<(), beelay_core::error::RemoveMember>>>,
+        RemoveMemberFromGroupWrapper,
+    ),
+    QueryAccess(
+        oneshot::Sender<
+            ActionResult<Result<HashMap<PeerId, MemberAccess>, beelay_core::error::QueryAccess>>,
+        >,
+        DocumentId,
+    ),
     CreateStream(oneshot::Sender<ActionResult<StreamId>>, PeerId),
     AcceptStream(oneshot::Sender<ActionResult<StreamId>>, PeerId),
     DisconnectStream(oneshot::Sender<ActionResult<()>>, StreamId),
     SendMessage(oneshot::Sender<ActionResult<()>>, Message),
-    DisplayStorage(oneshot::Sender<ActionResult<()>>),
+    DisplayValues(oneshot::Sender<ActionResult<()>>),
 }
 
 #[derive(Debug)]
@@ -144,7 +167,7 @@ impl BeelayActor {
     pub async fn display_storage(&self) {
         let (sender, receiver) = oneshot::channel();
         self.send_channel
-            .send(BeelayAction::DisplayStorage(sender))
+            .send(BeelayAction::DisplayValues(sender))
             .await
             .unwrap();
         receiver.await.expect("Failed to print");
@@ -235,6 +258,21 @@ impl BeelayActor {
             .await
             .expect("Failed to receive add member to doc result")
     }
+    
+    pub async fn remove_member_from_doc(
+        &self,
+        document_id: DocumentId,
+        entity: KeyhiveEntityIdWrapper,
+    ) -> ActionResult<Result<(), RemoveMember>> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_remove_member_from_doc =
+            BeelayAction::RemoveMemberFromDoc(sender, document_id, entity);
+        self.send_channel
+            .send(beelay_remove_member_from_doc)
+            .await
+            .expect("Failed to send remove member from doc action");
+        receiver.await.expect("Failed to receive remove member from doc result")
+    }
 
     pub async fn create_stream(&self, target: PeerId) -> ActionResult<StreamId> {
         let (sender, receiver) = oneshot::channel();
@@ -271,18 +309,61 @@ impl BeelayActor {
             .await
             .expect("Failed to receive disconnect stream result")
     }
+    
+    pub async fn create_group(&self, other_parents: Vec<KeyhiveEntityIdWrapper>) -> ActionResult<Result<PeerId, beelay_core::error::CreateGroup>> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_create_group = BeelayAction::CreateGroup(sender, other_parents);
+        self.send_channel
+            .send(beelay_create_group)
+            .await
+            .expect("Failed to send create group action");
+        receiver.await.expect("Failed to receive create group result")
+    }
+    
+    pub async fn add_member_to_group(&self, add: AddMemberToGroupWrapper) -> ActionResult<Result<(), beelay_core::error::AddMember>> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_add_member_to_group = BeelayAction::AddMemberToGroup(sender, add);
+        self.send_channel
+            .send(beelay_add_member_to_group)
+            .await
+            .expect("Failed to send add member to group action");
+        receiver.await.expect("Failed to receive add member to group result")
+    }
+    
+    pub async fn remove_member_from_group(&self, remove: RemoveMemberFromGroupWrapper) -> ActionResult<Result<(), beelay_core::error::RemoveMember>> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_remove_member_from_group = BeelayAction::RemoveMemberFromGroup(sender, remove);
+        self.send_channel
+            .send(beelay_remove_member_from_group)
+            .await
+            .expect("Failed to send remove member from group action");
+        receiver.await.expect("Failed to receive remove member from group result")
+    }
+    
+    pub async fn query_access(&self, doc: DocumentId) -> ActionResult<Result<
+        HashMap<PeerId, MemberAccess>,
+        beelay_core::error::QueryAccess,
+    >> {
+        let (sender, receiver) = oneshot::channel();
+        let beelay_query_access = BeelayAction::QueryAccess(sender, doc);
+        self.send_channel
+            .send(beelay_query_access)
+            .await
+            .expect("Failed to send query access action");
+        receiver.await.expect("Failed to receive query access result")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::actor::{BeelayAction, BeelayActor};
     use crate::messages::Message;
-    use crate::primitives::KeyhiveEntityIdWrapper;
+    use crate::primitives::{AddMemberToGroupWrapper, KeyhiveEntityIdWrapper, RemoveMemberFromGroupWrapper};
     use beelay_core::keyhive::MemberAccess;
-    use beelay_core::{Commit, CommitHash};
+    use beelay_core::{Commit, CommitHash, CommitOrBundle};
     use ed25519_dalek::SigningKey;
     use rand::thread_rng;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::pin::Pin;
     use tokio::sync::oneshot;
 
@@ -460,23 +541,51 @@ mod tests {
         // that the function completes without panicking
     }
 
-    fn process_actor_messages_between_2_actors<'a>(
+    // fn process_actor_messages_between_2_actors<'a>(
+    //     actor1: &'a BeelayActor,
+    //     actor2: &'a BeelayActor,
+    //     messages_to_2: Vec<Message>,
+    // ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
+    //     Box::pin(async move {
+    //         for message in messages_to_2.into_iter() {
+    //             let (tx, rx) = oneshot::channel();
+    //             let sendable_message = BeelayAction::SendMessage(tx, message);
+    //             // println!("Sending message: {:?} {:?}", actor1.peer_id(), sendable_message);
+    //             actor2.send_channel.send(sendable_message).await.unwrap();
+    // 
+    //             // wait for response
+    //             let (_, messages_to_1) = rx.await.unwrap().unpack();
+    //             process_actor_messages_between_2_actors(actor2, actor1, messages_to_1).await;
+    //         }
+    //     })
+    // }
+
+    async fn process_actor_messages_between_2_actors<'a>(
         actor1: &'a BeelayActor,
         actor2: &'a BeelayActor,
         messages_to_2: Vec<Message>,
-    ) -> Pin<Box<dyn Future<Output = ()> + 'a>> {
-        Box::pin(async move {
-            for message in messages_to_2.into_iter() {
-                let (tx, rx) = oneshot::channel();
-                let sendable_message = BeelayAction::SendMessage(tx, message);
-                // println!("Sending message: {:?} {:?}", actor1.peer_id(), sendable_message);
-                actor2.send_channel.send(sendable_message).await.unwrap();
+    ) {
+        let mut message_queue = VecDeque::new();
 
-                // wait for response
-                let (_, messages_to_1) = rx.await.unwrap().unpack();
-                process_actor_messages_between_2_actors(actor2, actor1, messages_to_1).await;
+        // Initialize the queue with the initial messages and actor pair
+        for message in messages_to_2.into_iter() {
+            message_queue.push_back((actor2, actor1, message));
+        }
+
+        while let Some((current_receiver, current_sender, message)) = message_queue.pop_front() {
+            let (tx, rx) = oneshot::channel();
+            let sendable_message = BeelayAction::SendMessage(tx, message);
+            // println!("Sending message: {:?} {:?}", current_sender.peer_id(), sendable_message);
+            current_receiver.send_channel.send(sendable_message).await.unwrap();
+
+            // wait for response
+            let (_, response_messages) = rx.await.unwrap().unpack();
+
+            // Add response messages to the queue with swapped actors
+            for response_message in response_messages.into_iter() {
+                message_queue.push_back((current_sender, current_receiver, response_message));
             }
-        })
+        }
     }
 
     #[tokio::test]
@@ -522,11 +631,190 @@ mod tests {
                 local_heads: Some(vec![initial_commit.hash()])
             }
         );
-
-        // println!("actor1: {:?}", actor1);
-        // actor1.display_storage().await;
-        // println!("-------------------------------------------------------------");
-        // println!("actor2: {:?}", actor2);
-        // actor2.display_storage().await;
     }
+
+    #[tokio::test]
+    async fn test_beelay_group_document_access_and_commits() {
+        // 1. Create 2 beelay actors
+        let actor1 = spawn_beelay_actor().await;
+        let actor2 = spawn_beelay_actor().await;
+
+        // 2. Create a group
+        let (group_result, _) = actor1.create_group(vec![]).await.unpack();
+        let group_id = group_result.expect("Failed to create group");
+
+        // 3. Add both beelay actors to the group
+        // First, create contact cards for both actors
+        let (contact_card1_result, _) = actor1.create_contact_card().await.unpack();
+        let contact_card1 = contact_card1_result.expect("Failed to create contact card for actor1");
+
+        let (contact_card2_result, _) = actor2.create_contact_card().await.unpack();
+        let contact_card2 = contact_card2_result.expect("Failed to create contact card for actor2");
+
+        // Add actor1 to the group
+        let add_member1 = AddMemberToGroupWrapper {
+            group_id,
+            member: KeyhiveEntityIdWrapper::Individual(contact_card1),
+            access: MemberAccess::Admin,
+        };
+        let (add_result1, _) = actor1.add_member_to_group(add_member1).await.unpack();
+        add_result1.expect("Failed to add actor1 to group");
+
+        // Add actor2 to the group
+        let add_member2 = AddMemberToGroupWrapper {
+            group_id,
+            member: KeyhiveEntityIdWrapper::Individual(contact_card2.clone()),
+            access: MemberAccess::Admin,
+        };
+        let (add_result2, _) = actor1.add_member_to_group(add_member2).await.unpack();
+        add_result2.expect("Failed to add actor2 to group");
+
+        // set up stream to synchronize
+        let target_peer_id = actor2.peer_id();
+        let (stream_id, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+
+        // Set up communication between actors for syncing
+        process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+        
+        println!("closing stream: {:?}", stream_id);
+
+        let (_, stream_messages) = actor1.disconnect_stream(stream_id).await.unpack();
+        process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+
+        // 4. Create a document owned by this group
+        let test_content = b"group document content".to_vec();
+        let group_owners = vec![KeyhiveEntityIdWrapper::Group(group_id)];
+        let (doc_result, _) = actor1.create_doc(test_content.clone(), group_owners).await.unpack();
+        let (document_id, initial_commit) = doc_result.expect("Failed to create document");
+
+        // 5. Query access for the document and validate that it is owned by the group
+        let (access_result, _) = actor1.query_access(document_id).await.unpack();
+        let access_map = access_result.expect("Failed to query access");
+
+        // Verify that the group has access to the document
+        assert!(access_map.contains_key(&group_id), "Group should have access to the document");
+
+        // 6. Add a test commit
+        let first_commit_content = b"first test commit".to_vec();
+        let first_commit_hash = CommitHash::from(blake3::hash(&first_commit_content).as_bytes());
+        let first_test_commit = Commit::new(
+            vec![initial_commit.hash()],
+            first_commit_content.clone(),
+            first_commit_hash,
+        );
+
+        let (add_commits_result, _messages1) = actor1
+            .add_commits(document_id, vec![first_test_commit.clone()])
+            .await
+            .unpack();
+        add_commits_result.expect("Failed to add first test commit");
+        
+        // set up stream to synchronize
+        let target_peer_id = actor2.peer_id();
+        let (_, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+
+        // Set up communication between actors for syncing
+        process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+
+        // 7. Validate that the commit is present for both actors
+        let (doc1_commits, _) = actor1.load_doc(document_id).await.unpack();
+        let (doc2_commits, _) = actor2.load_doc(document_id).await.unpack();
+
+        // Helper function to check if a commit exists in the document
+        let contains_commit = |commits: Option<Vec<CommitOrBundle>>, target_hash: CommitHash| -> bool {
+            if let Some(commits) = commits {
+                commits.iter().any(|commit_or_bundle| {
+                    if let CommitOrBundle::Commit(commit) = commit_or_bundle {
+                        commit.hash() == target_hash
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                false
+            }
+        };
+
+        assert!(
+            contains_commit(doc1_commits, first_commit_hash),
+            "First commit should be present in actor1's document"
+        );
+        assert!(
+            contains_commit(doc2_commits, first_commit_hash),
+            "First commit should be present in actor2's document"
+        );
+        
+        //todo: cannot remove member from group, this is not tested in beelay tests and 
+        // it causes infinite loop of streaming messages, may be an issue here or in beelay, not sure...
+        // odd behavior exhibited when adding removal to beelay test scenarios, but not consistent with issue here...
+
+        // // 8. Remove the second actor from the group
+        // let remove_member = RemoveMemberFromGroupWrapper {
+        //     group_id,
+        //     member: KeyhiveEntityIdWrapper::Individual(contact_card2),
+        // };
+        // let (remove_result, remove_messages) = actor1.remove_member_from_group(remove_member).await.unpack();
+        // remove_result.expect("Failed to remove actor2 from group");
+        // println!("remove: {:?}", remove_messages);
+        // actor1.display_storage().await;
+        // 
+        // // set up stream to synchronize
+        // let target_peer_id = actor2.peer_id();
+        // let (_, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+        // 
+        // // Process messages
+        // process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+        // 
+        // println!("after process messages here I am!!!");
+        // 
+        // // 9. Make another test commit to the document
+        // let second_commit_content = b"second test commit".to_vec();
+        // let second_commit_hash = CommitHash::from(blake3::hash(&second_commit_content).as_bytes());
+        // let second_test_commit = Commit::new(
+        //     vec![first_commit_hash],
+        //     second_commit_content.clone(),
+        //     second_commit_hash,
+        // );
+        // 
+        // let (add_commits_result2, _messages2) = actor1
+        //     .add_commits(document_id, vec![second_test_commit.clone()])
+        //     .await
+        //     .unpack();
+        // add_commits_result2.expect("Failed to add second test commit");
+        // 
+        // println!("here I am!!!");
+        // 
+        // // set up stream to synchronize
+        // let target_peer_id = actor2.peer_id();
+        // let (_, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+        // 
+        // // Process messages (though actor2 should not receive them since it's removed from group)
+        // process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+        // 
+        // // 10. Validate that the first commit is present in the document for the first actor but not the second
+        // let (doc1_commits_final, _) = actor1.load_doc(document_id).await.unpack();
+        // let (doc2_commits_final, _) = actor2.load_doc(document_id).await.unpack();
+        // 
+        // // Actor1 should have both commits
+        // assert!(
+        //     contains_commit(doc1_commits_final.clone(), first_commit_hash),
+        //     "First commit should still be present in actor1's document"
+        // );
+        // assert!(
+        //     contains_commit(doc1_commits_final, second_commit_hash),
+        //     "Second commit should be present in actor1's document"
+        // );
+        // 
+        // // Actor2 should only have the first commit (from before removal), not the second
+        // assert!(
+        //     contains_commit(doc2_commits_final.clone(), first_commit_hash),
+        //     "First commit should still be present in actor2's document"
+        // );
+        // assert!(
+        //     !contains_commit(doc2_commits_final, second_commit_hash),
+        //     "Second commit should NOT be present in actor2's document after removal from group"
+        // );
+    }
+
+
 }

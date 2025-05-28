@@ -237,6 +237,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             for (id, events) in results.new_stream_events {
                 for event in events {
                     tracing::trace!(?event, "stream event");
+                    println!("stream event: {:?}", event);
                     let stream_state = self.streams.get(&id).unwrap();
                     match event {
                         beelay_core::StreamEvent::Send(msg) => {
@@ -260,6 +261,9 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                             self.outbox.push_back(outgoing_message);
                         }
                         beelay_core::StreamEvent::Close => {
+                            //todo: we never end up here, and in beelay tests, they explicitly 
+                            // close the stream on other beelays by removing tracking of state...
+                            println!("stream closed: {:?}", id);
                             self.streams.remove(&id);
                         }
                     }
@@ -286,6 +290,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         &mut self,
     ) -> HashMap<DocumentId, Vec<beelay_core::doc_status::DocEvent>> {
         std::mem::take(&mut self.notifications)
+        // TODO: use
     }
 
     pub fn create_doc_with_contents(
@@ -360,6 +365,90 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         }
     }
 
+    pub fn remove_member_from_doc(
+        &mut self,
+        doc: DocumentId,
+        member: KeyhiveEntityId,
+    ) -> Result<(), beelay_core::error::RemoveMember> {
+        let (command_id, event) = Event::remove_member_from_doc(doc, member);
+        self.inbox.push_back(event);
+        self.handle_events();
+        match self.completed_commands.remove(&command_id) {
+            Some(Ok(CommandResult::Keyhive(
+                        KeyhiveCommandResult::RemoveMemberFromDoc(r),
+                    ))) => r,
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        }
+    }
+
+    pub fn create_group(
+        &mut self,
+        other_parents: Vec<KeyhiveEntityId>,
+    ) -> Result<PeerId, beelay_core::error::CreateGroup> {
+        let (command_id, event) = Event::create_group(other_parents);
+        self.inbox.push_back(event);
+        self.handle_events();
+        match self.completed_commands.remove(&command_id) {
+            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::CreateGroup(r)))) => {
+                r
+            }
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        }
+    }
+
+    pub fn add_member_to_group(
+        &mut self,
+        add: beelay_core::keyhive::AddMemberToGroup,
+    ) -> Result<(), beelay_core::error::AddMember> {
+        let (command_id, event) = Event::add_member_to_group(add);
+        self.inbox.push_back(event);
+        self.handle_events();
+        match self.completed_commands.remove(&command_id) {
+            Some(Ok(CommandResult::Keyhive(
+                        KeyhiveCommandResult::AddMemberToGroup(r),
+                    ))) => r,
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        }
+    }
+
+    pub fn remove_member_from_group(
+        &mut self,
+        remove: beelay_core::keyhive::RemoveMemberFromGroup,
+    ) -> Result<(), beelay_core::error::RemoveMember> {
+        let (command_id, event) = Event::remove_member_from_group(remove);
+        self.inbox.push_back(event);
+        self.handle_events();
+        match self.completed_commands.remove(&command_id) {
+            Some(Ok(CommandResult::Keyhive(
+                        KeyhiveCommandResult::RemoveMemberFromGroup(r),
+                    ))) => r,
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        }
+    }
+
+    pub fn query_access(
+        &mut self,
+        doc: DocumentId,
+    ) -> Result<
+        HashMap<PeerId, MemberAccess>,
+        beelay_core::error::QueryAccess,
+    > {
+        let (command_id, event) = Event::query_access(doc);
+        self.inbox.push_back(event);
+        self.handle_events();
+        match self.completed_commands.remove(&command_id) {
+            Some(Ok(CommandResult::Keyhive(
+                        KeyhiveCommandResult::QueryAccess(r),
+                    ))) => r,
+            Some(other) => panic!("unexpected command result: {:?}", other),
+            None => panic!("no command result"),
+        }
+    }
+
     pub fn create_stream(&mut self, target: &PeerId, direction: StreamDirection) -> StreamId {
         let (command, event) = Event::create_stream(direction);
         self.starting_streams.insert(command, *target);
@@ -421,27 +510,24 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         };
     }
 
-    pub fn register_endpoint(&mut self, other: &PeerId) -> beelay_core::EndpointId {
-        let command = {
-            let (command, event) = Event::register_endpoint(beelay_core::Audience::peer(other));
-            self.inbox.push_back(event);
-            command
-        };
-        self.handle_events();
-        let endpoint_id = match self.completed_commands.remove(&command) {
-            Some(Ok(CommandResult::RegisterEndpoint(endpoint_id))) => endpoint_id,
-            Some(other) => panic!("unexpected command result: {:?}", other),
-            None => panic!("no command result"),
-        };
-        self.endpoints.insert(endpoint_id, *other);
-        endpoint_id
-    }
 
-    pub fn output_storage(&self) {
-        println!("storage size: {:?}", self.storage.len());
-        for entry in self.storage.iter() {
-            println!("{:?}", entry);
+    pub fn display_values(&self) {
+        println!("streams: {:?}", self.streams.len());
+        for stream in self.streams.values() {
+            println!("{:?}", stream);
         }
+        println!("notifications: {:?}", self.notifications.len());
+        for (doc_id, notifications) in self.notifications.iter() {
+            println!("{:?} {:?}", doc_id, notifications);
+        }
+        println!("peer changes: {:?}", self.peer_changes.len());
+        for (peer_id, changes) in self.peer_changes.iter() {
+            println!("{:?} {:?}", peer_id, changes);
+        }
+        println!("storage size: {:?}", self.storage.len());
+        // for entry in self.storage.iter() {
+        //     println!("{:?}", entry);
+        // }
     }
 
     pub async fn process_actions(&mut self) {
@@ -512,10 +598,37 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     let action_result = self.process_result(());
                     reply.send(action_result).expect("send failed for action");
                 }
-                BeelayAction::DisplayStorage(reply) => {
-                    self.output_storage();
+                BeelayAction::DisplayValues(reply) => {
+                    self.display_values();
                     let action_result = self.process_result(());
-                    reply.send(action_result).unwrap()
+                    reply.send(action_result).expect("bad storage");
+                },
+
+                BeelayAction::RemoveMemberFromDoc(reply, doc_id, identity) => {
+                    let result = self.remove_member_from_doc(doc_id, identity.into());
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
+                }
+                BeelayAction::CreateGroup(reply, identities) => {
+                    let identities = identities.into_iter().map(|x| x.into()).collect();
+                    let result = self.create_group(identities);
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
+                }
+                BeelayAction::AddMemberToGroup(reply, identity) => {
+                    let result = self.add_member_to_group(identity.into());
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
+                }
+                BeelayAction::RemoveMemberFromGroup(reply, identity) => {
+                    let result = self.remove_member_from_group(identity.into());
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
+                }
+                BeelayAction::QueryAccess(reply, doc_id) => {
+                    let result = self.query_access(doc_id);
+                    let action_result = self.process_result(result);
+                    reply.send(action_result).expect("send failed for action");
                 }
             }
         }
