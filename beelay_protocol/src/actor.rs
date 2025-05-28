@@ -693,6 +693,8 @@ mod tests {
 
         // Verify that the group has access to the document
         assert!(access_map.contains_key(&group_id), "Group should have access to the document");
+        assert!(access_map.contains_key(&actor2.peer_id()), "Actor 2 should have access to the document");
+        assert!(access_map.contains_key(&actor1.peer_id()), "Actor 1 should have access to the document");
 
         // 6. Add a test commit
         let first_commit_content = b"first test commit".to_vec();
@@ -743,26 +745,37 @@ mod tests {
             contains_commit(doc2_commits, first_commit_hash),
             "First commit should be present in actor2's document"
         );
-        
-        //todo: cannot remove member from group, this is not tested in beelay tests and 
-        // it causes infinite loop of streaming messages, may be an issue here or in beelay, not sure...
-        // odd behavior exhibited when adding removal to beelay test scenarios, but not consistent with issue here...
 
-        // // 8. Remove the second actor from the group
-        // let remove_member = RemoveMemberFromGroupWrapper {
-        //     group_id,
-        //     member: KeyhiveEntityIdWrapper::Individual(contact_card2),
-        // };
-        // let (remove_result, remove_messages) = actor1.remove_member_from_group(remove_member).await.unpack();
-        // remove_result.expect("Failed to remove actor2 from group");
-        // println!("remove: {:?}", remove_messages);
-        // actor1.display_storage().await;
-        // 
-        // // set up stream to synchronize
-        // let target_peer_id = actor2.peer_id();
-        // let (_, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
-        // 
-        // // Process messages
+        // 8. Remove the second actor from the group
+        let remove_member = RemoveMemberFromGroupWrapper {
+            group_id,
+            member: KeyhiveEntityIdWrapper::Individual(contact_card2),
+        };
+        let (remove_result, remove_messages) = actor1.remove_member_from_group(remove_member).await.unpack();
+        remove_result.expect("Failed to remove actor2 from group");
+
+        let (access_result, _) = actor1.query_access(document_id).await.unpack();
+        let access_map = access_result.expect("Failed to query access");
+        
+        // validate that the user no longer has access to the document
+        assert!(!access_map.contains_key(&actor2.peer_id()), "Actor 2 should have lost access to the document");
+        assert!(access_map.contains_key(&actor1.peer_id()), "Actor 1 should retain access to the document");
+        assert!(access_map.contains_key(&group_id), "Group should have access to the document");
+        println!("access map: {:?}", access_map);
+        
+        println!("remove: {:?}", remove_messages);
+        
+        // set up stream to synchronize
+        let target_peer_id = actor2.peer_id();
+        let (_, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+        println!("stream messages: {:?}", stream_messages);
+
+        //todo: cannot remove member from group, this is not tested in beelay tests and 
+        // it causes infinite loop of streaming messages, confirmed that this occurs in the beelay tests as well
+        // scenario: Alice creates a group, Alice and Bob are members of the group, Alice removes Bob from the group, Alice creates a stream with bob
+        // the stream now runs for every, given the sizes of the messages, it appears to be a loop fo the same messages, or at least the same sizes
+        
+        // Process messages
         // process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
         // 
         // println!("after process messages here I am!!!");

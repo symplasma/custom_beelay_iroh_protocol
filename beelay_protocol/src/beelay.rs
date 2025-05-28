@@ -237,7 +237,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             for (id, events) in results.new_stream_events {
                 for event in events {
                     tracing::trace!(?event, "stream event");
-                    println!("stream event: {:?}", event);
+                    // println!("stream event: {:?}", event);
                     let stream_state = self.streams.get(&id).unwrap();
                     match event {
                         beelay_core::StreamEvent::Send(msg) => {
