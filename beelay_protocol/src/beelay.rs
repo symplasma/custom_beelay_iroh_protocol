@@ -1,10 +1,9 @@
 /// Much of the functionality here was taken and modified from the beelay test suite.  
 /// This module handles all actions associated with beelay, managing the state machine in a single thread.
-/// The `BeelayWrapper` manages all core functionality where it receives messages on a channel asynchronously 
-/// and processes the `BeelayAction` enum managing all options.  The `BeelayWrapper` is expected 
+/// The `BeelayWrapper` manages all core functionality where it receives messages on a channel asynchronously
+/// and processes the `BeelayAction` enum managing all options.  The `BeelayWrapper` is expected
 /// to run as a single instance actor that interacts with the rest of the world by passing messages.
-
-use crate::actor::{ActionResult, BeelayAction};
+use crate::actor::{ActionResult, BeelayAction, NoticeSubscriberClosure};
 use crate::messages::Message;
 use crate::primitives::StreamState;
 use crate::storage_handling;
@@ -25,7 +24,7 @@ use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 
-/// This is the main entry point for building a Beelay state machine and ensuring it is either 
+/// This is the main entry point for building a Beelay state machine and ensuring it is either
 /// properly loaded from storage or built from scratch.
 pub struct BeelayBuilder {
     signing_key: Option<SigningKey>,
@@ -150,6 +149,7 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
 
     streams: HashMap<StreamId, StreamState>,
     starting_streams: HashMap<CommandId, PeerId>,
+    notification_subscribers: Vec<NoticeSubscriberClosure>,
 
     recv_channel: Receiver<BeelayAction>,
     send_channel: Sender<BeelayAction>, // linked here in case we need a feedback mechanism
@@ -172,12 +172,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             inbox,
             completed_commands: HashMap::new(),
             notifications: HashMap::new(), // not currently processing
-            peer_changes: HashMap::new(), // not currently processing
+            peer_changes: HashMap::new(),  // not currently processing
             handling_requests: HashMap::new(), // not currently processing
-            endpoints: HashMap::new(), // not currently processing
-            shutdown: false, 
+            endpoints: HashMap::new(),     // not currently processing
+            shutdown: false,
             streams: HashMap::new(),
             starting_streams: HashMap::new(),
+            notification_subscribers: Vec::new(),
             recv_channel,
             send_channel,
         };
@@ -268,7 +269,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                             self.outbox.push_back(outgoing_message);
                         }
                         beelay_core::StreamEvent::Close => {
-                            //todo: we never end up here, and in beelay tests, they explicitly 
+                            //todo: we never end up here, and in beelay tests, they explicitly
                             // close the stream on other beelays by removing tracking of state...
                             println!("stream closed: {:?}", id);
                             self.streams.remove(&id);
@@ -381,9 +382,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command_id) {
-            Some(Ok(CommandResult::Keyhive(
-                        KeyhiveCommandResult::RemoveMemberFromDoc(r),
-                    ))) => r,
+            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::RemoveMemberFromDoc(r)))) => r,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
@@ -397,9 +396,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command_id) {
-            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::CreateGroup(r)))) => {
-                r
-            }
+            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::CreateGroup(r)))) => r,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
@@ -413,9 +410,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command_id) {
-            Some(Ok(CommandResult::Keyhive(
-                        KeyhiveCommandResult::AddMemberToGroup(r),
-                    ))) => r,
+            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::AddMemberToGroup(r)))) => r,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
@@ -429,9 +424,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
         self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command_id) {
-            Some(Ok(CommandResult::Keyhive(
-                        KeyhiveCommandResult::RemoveMemberFromGroup(r),
-                    ))) => r,
+            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::RemoveMemberFromGroup(r)))) => r,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
@@ -440,17 +433,12 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
     pub fn query_access(
         &mut self,
         doc: DocumentId,
-    ) -> Result<
-        HashMap<PeerId, MemberAccess>,
-        beelay_core::error::QueryAccess,
-    > {
+    ) -> Result<HashMap<PeerId, MemberAccess>, beelay_core::error::QueryAccess> {
         let (command_id, event) = Event::query_access(doc);
         self.inbox.push_back(event);
         self.handle_events();
         match self.completed_commands.remove(&command_id) {
-            Some(Ok(CommandResult::Keyhive(
-                        KeyhiveCommandResult::QueryAccess(r),
-                    ))) => r,
+            Some(Ok(CommandResult::Keyhive(KeyhiveCommandResult::QueryAccess(r)))) => r,
             Some(other) => panic!("unexpected command result: {:?}", other),
             None => panic!("no command result"),
         }
@@ -516,7 +504,6 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             None => panic!("no command result"),
         };
     }
-
 
     pub fn display_values(&self) {
         println!("streams: {:?}", self.streams.len());
@@ -609,7 +596,7 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     self.display_values();
                     let action_result = self.process_result(());
                     reply.send(action_result).expect("bad storage");
-                },
+                }
 
                 BeelayAction::RemoveMemberFromDoc(reply, doc_id, identity) => {
                     let result = self.remove_member_from_doc(doc_id, identity.into());
@@ -636,6 +623,18 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     let result = self.query_access(doc_id);
                     let action_result = self.process_result(result);
                     reply.send(action_result).expect("send failed for action");
+                }
+                BeelayAction::SubscribeToNotices(reply, subscriber) => {
+                    self.notification_subscribers.push(subscriber);
+                    let action_result = self.process_result(());
+                    reply.send(action_result).expect("send failed for action");
+                }
+            }
+            for (doc_id, events) in self.pop_notifications() {
+                for event in events {
+                    for subscriber in self.notification_subscribers.iter() {
+                        subscriber(doc_id, event.clone()).await;
+                    }
                 }
             }
         }

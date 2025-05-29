@@ -9,7 +9,6 @@ use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, 
 use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::Arc;
 use tracing::{Instrument, Level, error, info, span};
 
@@ -31,6 +30,7 @@ impl IrohBeelayProtocol {
     /// * `iroh_beelay_id` - The unique identifier for this beelay node and iroh endpoint
     /// * `storage` - Storage implementation for persisting protocol data
     /// * `endpoint` - IROH network endpoint for communication
+    ///
     pub async fn new(
         iroh_beelay_id: primitives::IrohBeelayID,
         storage: storage_handling::BeelayStorage,
@@ -297,7 +297,7 @@ pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayPr
         storage_handling::BeelayStorage::new(),
         endpoint.clone(),
     )
-        .await;
+    .await;
     let router = iroh::protocol::Router::builder(endpoint)
         .accept(ALPN, beelay_protocal.clone()) // This makes the router handle incoming connections with our ALPN via Echo::accept!
         .spawn();
@@ -413,7 +413,7 @@ mod tests {
             .dial_node_and_send_messages(node_addr_2, new_messages)
             .await
             .unwrap();
-        
+
         let (commits_1, _) = beelay_1.beelay_actor().load_doc(document_id).await.unpack();
 
         let commit_filter = |commits: Option<Vec<CommitOrBundle>>| {
