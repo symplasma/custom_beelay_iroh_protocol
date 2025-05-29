@@ -8,8 +8,9 @@ use anyhow::Result;
 use iroh::endpoint::{RecvStream, SendStream};
 use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap};
 use std::sync::Arc;
+use tracing::{Instrument, Level, error, span, info};
 
 /// Application-Layer Protocol Negotiation (ALPN) identifier for the beelay protocol version 1.
 pub const ALPN: &[u8] = b"beelay/1";
@@ -59,12 +60,19 @@ impl IrohBeelayProtocol {
     ///
     /// # Returns
     /// Result indicating success or failure of the operation
+    #[tracing::instrument(skip(self, messages), fields(num_messages=messages.len()), level = "info")]
     pub async fn dial_node_and_send_messages(
         &self,
         node_addr: NodeAddr,
         messages: Vec<messages::Message>,
     ) -> Result<()> {
         let conn = self.endpoint.connect(node_addr, ALPN).await?;
+        let node_id = conn.remote_node_id()?;
+        let info = self
+            .endpoint
+            .remote_info(node_id)
+            .expect("Failed to get remote info from what should be a complete connection");
+        println!("connection type: {:#?}", info.conn_type);
         let (mut send, mut recv) = conn.open_bi().await?;
         self.send_messages(messages, &mut send, &mut recv).await?;
         send.finish()?;
@@ -109,6 +117,7 @@ impl IrohBeelayProtocol {
     ///
     /// # Returns
     /// Result indicating success or failure of sending all messages
+    #[tracing::instrument(skip_all, fields(num_messages=messages.len()), level = "info")]
     async fn send_messages(
         &self,
         messages: Vec<messages::Message>,
@@ -131,7 +140,7 @@ impl IrohBeelayProtocol {
         Ok(())
     }
 
-    /// Serializes and sends a single message over a stream, encoding the length of the 
+    /// Serializes and sends a single message over a stream, encoding the length of the
     /// message alongside the message
     ///
     /// # Arguments
@@ -180,14 +189,20 @@ impl ProtocolHandler for IrohBeelayProtocol {
     fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {
         let beelay_protocol = self.clone();
         let source_peer_id = beelay_protocol.beelay_actor.peer_id();
+        let this_node_id = beelay_protocol.endpoint.node_id();
+        let node_id = connection
+            .remote_node_id()
+            .expect("This should be a complete connection");
+        let _span = span!(Level::INFO, "incoming_connection", from = %node_id.to_string(), to_this_node = %this_node_id.to_string());
         Box::pin(async move {
-            let node_id = connection.remote_node_id()?;
             println!("accepted connection from {node_id}");
             let (mut send, mut recv) = connection.accept_bi().await?;
             loop {
+                // todo: implement proper exit condition here
                 // Read the message from the stream.
                 match Self::recv_msg(&mut recv).await {
                     Ok(msg) => {
+                        info!("received incoming messages");
                         let (_, outgoing_messages) = beelay_protocol
                             .beelay_actor
                             .incoming_message(msg)
@@ -204,10 +219,12 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             .into_iter()
                         {
                             if key == node_id {
+                                info!("sending messages to connected node");
                                 for msg in group {
                                     Self::send_msg(msg, &mut send).await?;
                                 }
                             } else {
+                                info!(name: "sending messages to other node", node_id=%key.to_string());
                                 // send out to other nodes, create connections to do so
                                 let new_beelay_protocol = beelay_protocol.clone();
                                 let task = tokio::spawn(async move {
@@ -218,6 +235,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                                 handles.push(task);
                             }
                         }
+                        info!("finished with responses, send Done message");
                         // Send Done message so sender can terminate loop for this chunk of outgoing
                         Self::send_msg(
                             messages::Message::Done {
@@ -226,6 +244,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             &mut send,
                         )
                         .await?;
+                        info!("joining {} handles", handles.len());
                         for h in handles {
                             // not ideal for the time being, but this allows us to propagate up errors to the calling function
                             h.await??;
@@ -233,14 +252,15 @@ impl ProtocolHandler for IrohBeelayProtocol {
                     }
                     Err(e) => {
                         // In the case of an error, finish and close the connection, then return the error.
+                        error!("error while receiving message: {}", e);
                         send.finish()?;
                         connection.closed().await;
+                        info!("successfully closed connection despite error");
                         Err(e)?;
                     }
                 }
             }
-            Ok(())
-        })
+        }.instrument(_span))
     }
 }
 
@@ -281,6 +301,25 @@ mod tests {
 
     #[tokio::test]
     async fn it_works() {
+        // construct a subscriber that prints formatted traces to stdout
+        // let subscriber = tracing_subscriber::FmtSubscriber::new();
+        // Start configuring a `fmt` subscriber
+        let subscriber = tracing_subscriber::fmt()
+            // Use a more compact, abbreviated log format
+            .compact()
+            // Display source code file paths
+            .with_file(true)
+            // Display source code line numbers
+            .with_line_number(true)
+            // Display the thread ID an event was recorded on
+            .with_thread_ids(true)
+            // Don't display the event's target (module path)
+            .with_target(false)
+            // Build the subscriber
+            // .with_max_level(Level::TRACE)
+            .finish();
+        // use that subscriber to process traces emitted after this point
+        tracing::subscriber::set_global_default(subscriber).unwrap();
         let (node_1, beelay_1) = start_beelay_node().await.unwrap();
         let (node_2, beelay_2) = start_beelay_node().await.unwrap();
 
