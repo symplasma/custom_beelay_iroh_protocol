@@ -53,6 +53,34 @@ impl IrohBeelayProtocol {
         Ok(())
     }
 
+    // Iterator version of send_messages can be used to investigate
+    // stack overflows on the recursive version if needed
+    // async fn send_messages(
+    //     &self,
+    //     messages: Vec<messages::Message>,
+    //     send: &mut SendStream,
+    //     recv: &mut RecvStream,
+    // ) -> Result<()> {
+    //     let mut messages: VecDeque<messages::Message> = messages.into();
+    //     while !messages.is_empty() {
+    //         let msg = messages.pop_front().unwrap();
+    //         Self::send_msg(msg, send).await?;
+    //         loop {
+    //             println!("in loop");
+    //             let respond = Self::recv_msg(recv).await?;
+    //             if let messages::Message::Done { .. } = respond {
+    //                 println!("fround done!!");
+    //                 break;
+    //             };
+    //             let (_, new_messages) = self.beelay_actor.incoming_message(respond).await.unpack();
+    //             for m in new_messages.into_iter().rev() {
+    //                 messages.push_front(m);
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
+
     async fn send_messages(
         &self,
         messages: Vec<messages::Message>,
@@ -63,6 +91,8 @@ impl IrohBeelayProtocol {
             Self::send_msg(msg, send).await?;
             loop {
                 let respond = Self::recv_msg(recv).await?;
+                // we use Done to signal that we are done sending messages,
+                // there are more efficient ways, but this is straightforward and works for now
                 if let messages::Message::Done { .. } = respond {
                     break;
                 };
@@ -150,11 +180,11 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             h.await??;
                         }
                     }
-                    Err(_e) => {
-                        // TODO: better error handling and ending of loop
+                    Err(e) => {
+                        // In the case of an error, finish and close the connection, then return the error.
                         send.finish()?;
                         connection.closed().await;
-                        break;
+                        Err(e)?;
                     }
                 }
             }
@@ -251,7 +281,8 @@ mod tests {
             }
         );
         println!("{:?}", status);
-        // FIXME: Initial commit is not sent to other nodes!!  this is a problem according to the beelay tests in the keyhive repo too.
+        // FIXME: Initial commit is not sent to other nodes!!  this is a problem according
+        //  to the beelay tests in the keyhive repo too.
 
         let actual_content = vec![1, 2, 3];
         let good_commit = Commit::new(
