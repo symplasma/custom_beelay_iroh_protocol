@@ -1,3 +1,9 @@
+/// Much of the functionality here was taken and modified from the beelay test suite.  
+/// This module handles all actions associated with beelay, managing the state machine in a single thread.
+/// The `BeelayWrapper` manages all core functionality where it receives messages on a channel asynchronously 
+/// and processes the `BeelayAction` enum managing all options.  The `BeelayWrapper` is expected 
+/// to run as a single instance actor that interacts with the rest of the world by passing messages.
+
 use crate::actor::{ActionResult, BeelayAction};
 use crate::messages::Message;
 use crate::primitives::StreamState;
@@ -19,7 +25,8 @@ use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 
-/// This is the main entry point for building a Beelay state machine and ensuring it is either properly loaded from storage or built from scratch.
+/// This is the main entry point for building a Beelay state machine and ensuring it is either 
+/// properly loaded from storage or built from scratch.
 pub struct BeelayBuilder {
     signing_key: Option<SigningKey>,
     storage: Option<BeelayStorage>,
@@ -139,7 +146,7 @@ pub struct BeelayWrapper<R: rand::Rng + rand::CryptoRng> {
     handling_requests: HashMap<CommandId, (OutboundRequestId, PeerId)>,
     endpoints: HashMap<beelay_core::EndpointId, PeerId>,
 
-    shutdown: bool,
+    shutdown: bool, // currently we don't stop the Beelay, it runs behind the scenes as long as the IROH endpoint is running.
 
     streams: HashMap<StreamId, StreamState>,
     starting_streams: HashMap<CommandId, PeerId>,
@@ -164,11 +171,11 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
             outbox: VecDeque::new(),
             inbox,
             completed_commands: HashMap::new(),
-            notifications: HashMap::new(),
-            peer_changes: HashMap::new(),
-            handling_requests: HashMap::new(),
-            endpoints: HashMap::new(),
-            shutdown: false,
+            notifications: HashMap::new(), // not currently processing
+            peer_changes: HashMap::new(), // not currently processing
+            handling_requests: HashMap::new(), // not currently processing
+            endpoints: HashMap::new(), // not currently processing
+            shutdown: false, 
             streams: HashMap::new(),
             starting_streams: HashMap::new(),
             recv_channel,

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub type BeelayStorage = BTreeMap<beelay_core::StorageKey, Vec<u8>>;
 
 /// function handles beelay tasks related to storage, currently implemented only for Btree, but will be implemented for proper CRDT storage in the future
+/// This is taken from beelay testsuite
 pub fn handle_task(
     storage: &mut BTreeMap<beelay_core::StorageKey, Vec<u8>>,
     signing_key: &mut SigningKey,

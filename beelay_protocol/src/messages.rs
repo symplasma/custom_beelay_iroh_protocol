@@ -63,7 +63,8 @@ impl Message {
     }
 }
 
-/// This Message structure is used to translate non-sendable but serializable values (mostly RC issues)
+/// This Message structure is used to translate non-serializable messages into serializable messages.
+/// Some IDs do not implement the Serialize trait, so we need to convert them to bytes.
 /// These are required internally to the Beelay structure, but must be sent across the wire,
 /// requiring this new SerializableMessage structure
 #[derive(Debug, Clone, Serialize, Deserialize)]

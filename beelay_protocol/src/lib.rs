@@ -11,8 +11,11 @@ use n0_future::boxed::BoxFuture;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+/// Application-Layer Protocol Negotiation (ALPN) identifier for the beelay protocol version 1.
 pub const ALPN: &[u8] = b"beelay/1";
 
+/// Main protocol handler for the Beelay network protocol implementation over IROH.
+/// Manages connections, message handling, and protocol-specific operations.
 #[derive(Debug, Clone)]
 pub struct IrohBeelayProtocol {
     beelay_actor: Arc<actor::BeelayActor>,
@@ -20,6 +23,12 @@ pub struct IrohBeelayProtocol {
 }
 
 impl IrohBeelayProtocol {
+    /// Creates a new instance of IrohBeelayProtocol.
+    ///
+    /// # Arguments
+    /// * `iroh_beelay_id` - The unique identifier for this beelay node and iroh endpoint
+    /// * `storage` - Storage implementation for persisting protocol data
+    /// * `endpoint` - IROH network endpoint for communication
     pub async fn new(
         iroh_beelay_id: primitives::IrohBeelayID,
         storage: storage_handling::BeelayStorage,
@@ -32,14 +41,24 @@ impl IrohBeelayProtocol {
         }
     }
 
+    /// Returns a reference to the IROH endpoint used by this protocol instance.
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
 
+    /// Returns a reference to the BeelayActor that handles protocol logic.
     pub fn beelay_actor(&self) -> &Arc<actor::BeelayActor> {
         &self.beelay_actor
     }
 
+    /// Establishes a connection to a remote node and sends and responds to batches of messages.
+    ///
+    /// # Arguments
+    /// * `node_addr` - Address of the target node
+    /// * `messages` - Vector of messages to be sent
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the operation
     pub async fn dial_node_and_send_messages(
         &self,
         node_addr: NodeAddr,
@@ -81,6 +100,15 @@ impl IrohBeelayProtocol {
     //     Ok(())
     // }
 
+    /// Sends multiple messages over a stream and handles their responses recursively.
+    ///
+    /// # Arguments
+    /// * `messages` - Vector of messages to send
+    /// * `send` - Stream for sending messages
+    /// * `recv` - Stream for receiving responses
+    ///
+    /// # Returns
+    /// Result indicating success or failure of sending all messages
     async fn send_messages(
         &self,
         messages: Vec<messages::Message>,
@@ -103,6 +131,15 @@ impl IrohBeelayProtocol {
         Ok(())
     }
 
+    /// Serializes and sends a single message over a stream, encoding the length of the 
+    /// message alongside the message
+    ///
+    /// # Arguments
+    /// * `msg` - Message to send
+    /// * `send` - Stream for sending the message
+    ///
+    /// # Returns
+    /// Result indicating success or failure of sending the message
     async fn send_msg(msg: messages::Message, send: &mut SendStream) -> Result<()> {
         let msg_serializable: messages::SerializableMessage = msg.into();
         let encoded = postcard::to_stdvec(&msg_serializable)?;
@@ -112,6 +149,13 @@ impl IrohBeelayProtocol {
         Ok(())
     }
 
+    /// Receives and deserializes a message from a stream.
+    ///
+    /// # Arguments
+    /// * `recv` - Stream to receive message from
+    ///
+    /// # Returns
+    /// Result containing the received message or an error
     async fn recv_msg(recv: &mut RecvStream) -> Result<messages::Message> {
         let mut incoming_len = [0u8; 8];
         recv.read_exact(&mut incoming_len).await?;
@@ -126,6 +170,13 @@ impl IrohBeelayProtocol {
 }
 
 impl ProtocolHandler for IrohBeelayProtocol {
+    /// Handles incoming connections by processing messages and routing responses.
+    ///
+    /// # Arguments
+    /// * `connection` - The incoming connection to handle
+    ///
+    /// # Returns
+    /// BoxFuture containing Result of connection handling
     fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {
         let beelay_protocol = self.clone();
         let source_peer_id = beelay_protocol.beelay_actor.peer_id();
@@ -193,6 +244,13 @@ impl ProtocolHandler for IrohBeelayProtocol {
     }
 }
 
+/// Initializes and starts a new Beelay node and IROH router.
+///
+/// Creates a new IrohBeelayID, sets up an IROH endpoint with discovery enabled,
+/// initializes the protocol handler, and creates a router for handling incoming connections.
+///
+/// # Returns
+/// A tuple containing the protocol router and protocol handler instance
 pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayProtocol)> {
     let iroh_beelay_id = primitives::IrohBeelayID::generate();
     let endpoint = Endpoint::builder()

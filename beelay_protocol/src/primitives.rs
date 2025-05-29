@@ -5,7 +5,6 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::{NodeId, SecretKey};
 use rand::thread_rng;
 use std::fmt::Debug;
-use std::ops::Add;
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -123,7 +122,6 @@ impl From<AddMemberToGroupWrapper> for beelay_core::keyhive::AddMemberToGroup {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Hash)]
 pub struct RemoveMemberFromGroupWrapper {
