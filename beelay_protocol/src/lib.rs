@@ -5,12 +5,13 @@ mod primitives;
 mod storage_handling;
 
 use anyhow::Result;
-use iroh::endpoint::{RecvStream, SendStream};
+use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, VarInt};
 use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
-use std::collections::{HashMap};
+use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
-use tracing::{Instrument, Level, error, span, info};
+use tracing::{Instrument, Level, error, info, span};
 
 /// Application-Layer Protocol Negotiation (ALPN) identifier for the beelay protocol version 1.
 pub const ALPN: &[u8] = b"beelay/1";
@@ -60,7 +61,11 @@ impl IrohBeelayProtocol {
     ///
     /// # Returns
     /// Result indicating success or failure of the operation
-    #[tracing::instrument(skip(self, messages), fields(num_messages=messages.len()), level = "info")]
+    #[tracing::instrument(
+        skip(self, messages),
+        fields(num_messages=messages.len()),
+        level = "info"
+    )]
     pub async fn dial_node_and_send_messages(
         &self,
         node_addr: NodeAddr,
@@ -72,11 +77,13 @@ impl IrohBeelayProtocol {
             .endpoint
             .remote_info(node_id)
             .expect("Failed to get remote info from what should be a complete connection");
-        println!("connection type: {:#?}", info.conn_type);
+        info!("connection type: {:?}", info.conn_type);
         let (mut send, mut recv) = conn.open_bi().await?;
         self.send_messages(messages, &mut send, &mut recv).await?;
         send.finish()?;
+        info!("finished sending messages");
         conn.close(0u32.into(), b"bye!");
+        info!("connection closed");
         Ok(())
     }
 
@@ -195,7 +202,6 @@ impl ProtocolHandler for IrohBeelayProtocol {
             .expect("This should be a complete connection");
         let _span = span!(Level::INFO, "incoming_connection", from = %node_id.to_string(), to_this_node = %this_node_id.to_string());
         Box::pin(async move {
-            println!("accepted connection from {node_id}");
             let (mut send, mut recv) = connection.accept_bi().await?;
             loop {
                 // todo: implement proper exit condition here
@@ -243,7 +249,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             },
                             &mut send,
                         )
-                        .await?;
+                            .await?;
                         info!("joining {} handles", handles.len());
                         for h in handles {
                             // not ideal for the time being, but this allows us to propagate up errors to the calling function
@@ -252,11 +258,18 @@ impl ProtocolHandler for IrohBeelayProtocol {
                     }
                     Err(e) => {
                         // In the case of an error, finish and close the connection, then return the error.
-                        error!("error while receiving message: {}", e);
+                        let close_result = if let Some(closed_reason) = connection.close_reason() {
+                            info!("connection closed with reason: {:?}", closed_reason);
+                            match closed_reason {
+                                ConnectionError::ApplicationClosed(ApplicationClose { error_code, reason })
+                                if error_code == VarInt::from(0u32) && *reason == *b"bye!" => Ok(()),
+                                _ => Err(e)
+                            }
+                        } else { Err(e) };
                         send.finish()?;
                         connection.closed().await;
-                        info!("successfully closed connection despite error");
-                        Err(e)?;
+                        info!("successfully closed connection");
+                        return close_result;
                     }
                 }
             }
@@ -284,7 +297,7 @@ pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayPr
         storage_handling::BeelayStorage::new(),
         endpoint.clone(),
     )
-    .await;
+        .await;
     let router = iroh::protocol::Router::builder(endpoint)
         .accept(ALPN, beelay_protocal.clone()) // This makes the router handle incoming connections with our ALPN via Echo::accept!
         .spawn();
@@ -377,7 +390,6 @@ mod tests {
                 local_heads: Some(vec![initial_commit.hash()])
             }
         );
-        println!("{:?}", status);
         // FIXME: Initial commit is not sent to other nodes!!  this is a problem according
         //  to the beelay tests in the keyhive repo too.
 
@@ -401,7 +413,7 @@ mod tests {
             .dial_node_and_send_messages(node_addr_2, new_messages)
             .await
             .unwrap();
-
+        
         let (commits_1, _) = beelay_1.beelay_actor().load_doc(document_id).await.unpack();
 
         let commit_filter = |commits: Option<Vec<CommitOrBundle>>| {
