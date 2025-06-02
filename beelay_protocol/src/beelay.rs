@@ -12,9 +12,9 @@ use beelay_core::contact_card::ContactCard;
 use beelay_core::error::{AddCommits, CreateContactCard};
 use beelay_core::keyhive::{KeyhiveCommandResult, KeyhiveEntityId, MemberAccess};
 use beelay_core::{
-    conn_info, Beelay, BundleSpec, CommandId, CommandResult, Commit, CommitHash, CommitOrBundle,
-    Config, DocumentId, Event, OutboundRequestId, PeerId, StreamDirection, StreamId,
-    UnixTimestampMillis,
+    Beelay, BundleSpec, CommandId, CommandResult, Commit, CommitHash, CommitOrBundle, Config,
+    DocumentId, Event, OutboundRequestId, PeerId, StreamDirection, StreamId, UnixTimestampMillis,
+    conn_info,
 };
 use ed25519_dalek::SigningKey;
 use rand::prelude::ThreadRng;
@@ -23,7 +23,6 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
-
 
 /// This is the main entry point for building a Beelay state machine and ensuring it is either
 /// properly loaded from storage or built from scratch.
