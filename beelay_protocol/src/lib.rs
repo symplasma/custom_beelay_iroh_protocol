@@ -6,11 +6,11 @@ mod storage_handling;
 
 use anyhow::Result;
 use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, VarInt};
-use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
+use iroh::{endpoint::Connection, protocol::ProtocolHandler, Endpoint, NodeAddr};
 use n0_future::boxed::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{Instrument, Level, error, info, span};
+use tracing::{info, span, Instrument, Level};
 
 /// Application-Layer Protocol Negotiation (ALPN) identifier for the beelay protocol version 1.
 pub const ALPN: &[u8] = b"beelay/1";

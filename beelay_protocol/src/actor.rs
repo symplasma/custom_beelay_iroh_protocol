@@ -7,7 +7,7 @@ use crate::primitives::{
 use crate::storage_handling::BeelayStorage;
 use beelay_core::doc_status::DocEvent;
 use beelay_core::error::{AddCommits, CreateContactCard, RemoveMember};
-use beelay_core::keyhive::{MemberAccess};
+use beelay_core::keyhive::MemberAccess;
 use beelay_core::{BundleSpec, Commit, CommitOrBundle, DocumentId, PeerId, StreamId};
 use ed25519_dalek::SigningKey;
 use std::collections::{HashMap, VecDeque};
@@ -505,8 +505,6 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use rand::thread_rng;
     use std::collections::{BTreeMap, VecDeque};
-    use std::pin::Pin;
-    use tokio::sync::mpsc::error::SendError;
     use tokio::sync::{mpsc, oneshot};
 
     async fn spawn_beelay_actor() -> BeelayActor {
