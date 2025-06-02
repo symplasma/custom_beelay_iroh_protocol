@@ -1,0 +1,97 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/26.1.1 Chrome/132.0.6834.210 Electron/34.3.3 Safari/537.36" version="26.1.1">
+  <diagram name="Page-1" id="eyF7VP7GgBqCk3YA7-2h">
+    <mxGraphModel dx="2954" dy="1196" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="GUIVirgj29znLSgw21a--17" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="60" y="90" width="500" height="550" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--3" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1ba1e2;fontColor=#ffffff;strokeColor=#006EAF;opacity=50;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry width="350" height="360" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;shape=link;" edge="1" parent="GUIVirgj29znLSgw21a--17" source="GUIVirgj29znLSgw21a--4" target="GUIVirgj29znLSgw21a--12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--4" value="Beelay Actor&lt;br&gt;(Single Threaded Tokio Runtime)&lt;div&gt;- Channels to recieve and send&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry x="80" y="460" width="180" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--5" value="" style="endArrow=classic;html=1;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="GUIVirgj29znLSgw21a--17" source="GUIVirgj29znLSgw21a--12" target="GUIVirgj29znLSgw21a--6">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="730" y="420" as="sourcePoint" />
+            <mxPoint x="360" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--6" value="Receive Conection" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry x="400" y="10" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--7" value="..." style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry x="400" y="145" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--8" value="" style="endArrow=classic;html=1;rounded=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="GUIVirgj29znLSgw21a--17" source="GUIVirgj29znLSgw21a--12" target="GUIVirgj29znLSgw21a--7">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="400" y="180" as="sourcePoint" />
+            <mxPoint x="370" y="10" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--11" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;Iroh Router/Endpoint&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;(Multi-Threaded Tokio Runtime)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry x="40" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--12" value="Custom Beelay Protocol" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#008a00;fontColor=#ffffff;strokeColor=#005700;opacity=50;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry x="24.340000000000003" y="70" width="291.33" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--13" value="Dial/Send" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="GUIVirgj29znLSgw21a--17">
+          <mxGeometry x="380" y="270" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--14" value="" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=2;rounded=0;exitX=1;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="GUIVirgj29znLSgw21a--17" source="GUIVirgj29znLSgw21a--12" target="GUIVirgj29znLSgw21a--13">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="730" y="420" as="sourcePoint" />
+            <mxPoint x="780" y="370" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--36" value="" style="group" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="770" y="130" width="640" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="GUIVirgj29znLSgw21a--36" source="GUIVirgj29znLSgw21a--19" target="GUIVirgj29znLSgw21a--21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--19" value="1. Receive Message" style="rounded=1;whiteSpace=wrap;html=1;absoluteArcSize=1;arcSize=14;strokeWidth=2;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry x="150" y="210" width="100" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--27" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="GUIVirgj29znLSgw21a--36" source="GUIVirgj29znLSgw21a--21" target="GUIVirgj29znLSgw21a--19">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="600" y="460" as="sourcePoint" />
+            <mxPoint x="210" y="460" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--21" value="3. Beelay State machine Processes" style="rounded=1;whiteSpace=wrap;html=1;absoluteArcSize=1;arcSize=14;strokeWidth=2;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry x="540" y="210" width="100" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--23" value="2. send message wtih response one-shot channel" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry x="320" y="210" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--28" value="4. send message wtih response one-shot channel" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry x="320" y="350" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--31" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;shape=link;" edge="1" parent="GUIVirgj29znLSgw21a--36" source="GUIVirgj29znLSgw21a--30" target="GUIVirgj29znLSgw21a--19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--32" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="GUIVirgj29znLSgw21a--36" source="GUIVirgj29znLSgw21a--30" target="GUIVirgj29znLSgw21a--19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--35" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="GUIVirgj29znLSgw21a--36" source="GUIVirgj29znLSgw21a--30" target="GUIVirgj29znLSgw21a--34">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--30" value="Communication needs" style="strokeWidth=2;html=1;shape=mxgraph.flowchart.decision;whiteSpace=wrap;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry x="145" width="110" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--33" value="5. Repeat Reques/Responss" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry y="130" width="130" height="34.66" as="geometry" />
+        </mxCell>
+        <mxCell id="GUIVirgj29znLSgw21a--34" value="6. Dial additional nodes and reconcile" style="rounded=1;whiteSpace=wrap;html=1;strokeWidth=2;" vertex="1" parent="GUIVirgj29znLSgw21a--36">
+          <mxGeometry x="300" y="25" width="120" height="60" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
