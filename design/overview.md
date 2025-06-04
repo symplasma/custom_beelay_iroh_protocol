@@ -6,7 +6,7 @@ This library's goal is to wrap the functionality of the early Beelay/Keyhive pro
 *Note: Currently the storage mechanism remains a Btree as used in the Beelay testing architecture*
 
 ## Top Level Design
-![Top level diagram](./Top_level.png)
+![Top level diagram](./top_level.svg)
 
 An Iroh Endpoint/Router is created with a custom protocol to define the interactions with Beelay.  
 * When spawned, the Iroh enpdpoint and the Beelay state machine share the same Key to identify them.
@@ -14,7 +14,7 @@ An Iroh Endpoint/Router is created with a custom protocol to define the interact
 * Upon receiving a connection request, Iroh creates a task/future that runs the acceptance handler.  This runs in a loop until the sender terminates the connection.  Messages will be sent back and forth until Beelay's state is satisfied.  It is possible to dial out to other nodes.  A future is spawned to handle dialing using the Iroh endpoint and engaging in a separate response/request cycle.
 
 ## Message Workflow
-![Message workflow diagram](./mesage_flow.png)
+![Message workflow diagram](./message_flow.svg)
 
 Received messages initiate this diagramed process.  A few things to note:  
 * Messages arrive in a serialized form of a different type than Beelay expects.  There are multiple types we need to relay that can be serialized but do not have the serialization traits from serde defined on them.  We therefore have an enum that acts as a relay to/from the real Message type to allow sending messages across the wire.
