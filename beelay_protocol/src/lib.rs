@@ -6,7 +6,8 @@ mod storage_handling;
 
 use anyhow::Result;
 use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, VarInt};
-use iroh::{Endpoint, NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
+pub use iroh::{Endpoint, protocol::Router};
+use iroh::{NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 use n0_future::boxed::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
