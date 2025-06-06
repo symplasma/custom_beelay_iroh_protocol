@@ -5,6 +5,9 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::{NodeId, SecretKey};
 use rand::thread_rng;
 use std::fmt::Debug;
+use iroh_base::NodeAddr;
+use iroh_base::ticket::{Error, NodeTicket, Ticket};
+use serde::{Deserialize, Serialize};
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -60,7 +63,7 @@ impl From<IrohBeelayID> for PeerId {
 }
 
 /// NewType wrapper that is converts contact cards to bytes so that they can be Sendable
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
 pub struct ContactCardWrapper(Vec<u8>);
 
 impl ContactCardWrapper {
@@ -164,5 +167,63 @@ impl StreamState {
     }
     pub(crate) fn target_stream_id(&self) -> Option<StreamId> {
         self.target_stream_id
+    }
+}
+
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BeelayTicket {
+    node_ticket: NodeTicket,
+    beelay_contact: ContactCardWrapper,
+}
+
+impl BeelayTicket {
+    pub fn new(node_ticket: NodeTicket, beelay_contact: ContactCardWrapper) -> Self {
+        Self {
+            node_ticket,
+            beelay_contact,
+        }
+    }
+    pub fn node_addr(&self) -> &NodeAddr {
+        self.node_ticket.node_addr()
+    }
+
+    pub fn contact_card(&self) -> &ContactCardWrapper {
+        &self.beelay_contact
+    }
+    
+    pub fn into_components(self) -> (NodeTicket, ContactCardWrapper) {
+        (self.node_ticket, self.beelay_contact)
+    }
+}
+
+impl Ticket for BeelayTicket {
+    const KIND: &'static str = "beelay";
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let node_ticket_bytes = self.node_ticket.to_bytes();
+        let mut buff = (node_ticket_bytes.len() as u64).to_be_bytes().to_vec();
+        buff.extend_from_slice(&node_ticket_bytes);
+        buff.extend_from_slice(self.beelay_contact.to_bytes());
+        buff
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let len_bytes: [u8; 8] = bytes[0..8].try_into().map_err(|_| Error::Verify("invalid length"))?;
+        let ticket_len = u64::from_be_bytes(len_bytes) as usize;
+
+        // Extract the node ticket bytes
+        let node_ticket_bytes = &bytes[8..8 + ticket_len];
+        let node_ticket = NodeTicket::from_bytes(node_ticket_bytes)?;
+
+        // Extract the remaining bytes for the beelay contact
+        let contact_bytes = &bytes[8 + ticket_len..];
+        let beelay_contact = ContactCardWrapper::from_bytes(contact_bytes)
+            .map_err(|_| Error::Verify("invalid beelay contact"))?;
+
+        Ok(Self {
+            node_ticket,
+            beelay_contact,
+        })
     }
 }
