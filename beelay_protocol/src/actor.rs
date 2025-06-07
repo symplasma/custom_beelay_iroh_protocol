@@ -973,7 +973,7 @@ mod tests {
 
         //todo: cannot remove member from group, this is not tested in beelay tests and
         // it causes infinite loop of streaming messages, confirmed that this occurs in the beelay tests as well
-        // scenario: Alice creates a group, Alice and Bob are members of the group, Alice removes Bob from the group, Alice creates a stream with bob. 
+        // scenario: Alice creates a group, Alice and Bob are members of the group, Alice removes Bob from the group, Alice creates a stream with bob.
         // The stream now runs forever, given the sizes of the messages; it appears to be a loop for the same messages.
 
         // Process messages

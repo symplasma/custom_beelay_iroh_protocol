@@ -4,19 +4,21 @@ mod messages;
 mod primitives;
 mod storage_handling;
 
+use crate::primitives::{BeelayTicket, ContactCardWrapper, KeyhiveEntityIdWrapper};
 use anyhow::Result;
+use beelay_core::contact_card::ContactCard;
+pub use beelay_core::{Commit, CommitHash, DocumentId, CommitOrBundle};
+pub use beelay_core::doc_status::DocEvent;
 use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, VarInt};
-pub use iroh_base::ticket::NodeTicket;
 pub use iroh::{Endpoint, protocol::Router};
 use iroh::{NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
+pub use iroh_base::ticket::NodeTicket;
+use iroh_base::ticket::Ticket;
 use n0_future::boxed::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
-use beelay_core::{Commit, CommitHash};
-use beelay_core::contact_card::ContactCard;
-use iroh_base::ticket::Ticket;
 use tracing::{Instrument, Level, info, span};
-use crate::primitives::{BeelayTicket, ContactCardWrapper, KeyhiveEntityIdWrapper};
+pub use crate::actor::NoticeSubscriberClosure;
 
 /// Application-Layer Protocol Negotiation (ALPN) identifier for the beelay protocol version 1.
 pub const ALPN: &[u8] = b"beelay/1";
@@ -53,62 +55,58 @@ impl IrohBeelayProtocol {
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
-    
+
     pub async fn node_addr(&self) -> Result<NodeAddr> {
         self.endpoint.node_addr().await
     }
-    
+
     pub async fn node_ticket(&self) -> Result<NodeTicket> {
         let node_addr = self.node_addr().await?;
         let ticket = NodeTicket::new(node_addr);
         Ok(ticket)
     }
-    
+
     pub async fn contact_card(&self) -> Result<ContactCardWrapper> {
         let (contact_card, _) = self.beelay_actor().create_contact_card().await.unpack();
         Ok(contact_card?)
     }
-    
+
     pub async fn beelay_ticket(&self) -> Result<BeelayTicket> {
         let contact_card = self.contact_card().await?;
         let node_ticket = self.node_ticket().await?;
         Ok(BeelayTicket::new(node_ticket, contact_card))
     }
-    
+
     pub async fn string_beelay_ticket(&self) -> Result<String> {
         Ok(self.beelay_ticket().await?.serialize())
     }
-    
-    pub async fn connect_via_serialized_ticket(&self, serialized_ticket: String) -> Result<()> {
+
+    pub async fn connect_via_serialized_ticket(&self, serialized_ticket: String) -> Result<DocumentId> {
         let ticket = BeelayTicket::deserialize(&serialized_ticket)?;
         let (node_ticket, contact_card) = ticket.into_components();
-        
+
         // Create document for exchange of messages, using contact card to facilitate communication in the beelay state machine
         let entity_id = KeyhiveEntityIdWrapper::Individual(contact_card.clone());
-        let (doc_result, _) = self.beelay_actor().create_doc(vec![], vec![entity_id]).await.unpack();
-        let (doc_id , initial_commit)= doc_result?;
+        let (doc_result, _) = self
+            .beelay_actor()
+            .create_doc(vec![], vec![entity_id])
+            .await
+            .unpack();
+        let (doc_id, initial_commit) = doc_result?;
         let target_peer_id = {
             let contact_card_beelay: ContactCard = contact_card.into();
             contact_card_beelay.peer_id()
         };
-        let (_, mut stream_messages) = self
+        let (_, stream_messages) = self
             .beelay_actor()
             .create_stream(target_peer_id)
             .await
             .unpack();
 
-        let hello_commit = Commit::new(
-            vec![initial_commit.hash()],
-            "You called?".into(),
-            CommitHash::from([1; 32]),
-        );
+        self.dial_node_and_send_messages(node_ticket.into(), stream_messages)
+            .await?;
 
-        let (_, new_messages) = self.beelay_actor().add_commits(doc_id, vec![hello_commit]).await.unpack();
-        stream_messages.extend(new_messages);
-
-        self.dial_node_and_send_messages(node_ticket.into(), stream_messages).await?;
-        
-        Ok(())
+        Ok(doc_id)
     }
 
     /// Returns a reference to the BeelayActor that handles protocol logic.
@@ -347,7 +345,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
 ///
 /// # Returns
 /// A tuple containing the protocol router and protocol handler instance
-pub async fn start_beelay_node() -> Result<(iroh::protocol::Router, IrohBeelayProtocol)> {
+pub async fn start_beelay_node(event_listener: NoticeSubscriberClosure) -> Result<(iroh::protocol::Router, IrohBeelayProtocol)> {
     let iroh_beelay_id = primitives::IrohBeelayID::generate();
     let endpoint = Endpoint::builder()
         .secret_key(iroh_beelay_id.clone().into())
@@ -373,15 +371,42 @@ mod tests {
     use super::*;
     use crate::primitives::KeyhiveEntityIdWrapper;
     use beelay_core::keyhive::MemberAccess;
-    use beelay_core::{Commit, CommitHash, CommitOrBundle};
+    use beelay_core::{Commit, CommitHash, CommitOrBundle, DocumentId};
+    use tokio::sync::mpsc;
+    use tokio::sync::mpsc::Receiver;
+
+    fn create_listener_closure() -> (Receiver<(DocumentId, DocEvent)>, NoticeSubscriberClosure) {
+        let (tx, rx) = mpsc::channel(100);
+
+        // Note: this is a messy bit of code since types cannot implement impl traits and we need.
+        let notice_closure: NoticeSubscriberClosure =
+            Box::new(move |doc_id: DocumentId, event: DocEvent| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    println!("Notice closure called: {}, {:?}", doc_id, event);
+                    let send_result = tx.send((doc_id, event)).await;
+                    // throw out results for now...
+                    match send_result {
+                        Ok(_) => {}
+                        Err(_) => {}
+                    }
+                })
+            });
+        (rx, notice_closure)
+    }
 
     #[tokio::test]
     async fn serialization_connections_test() {
-        let (_node_1, beelay_1) = start_beelay_node().await.unwrap();
+        let (_rx1, notice_closure_1) = create_listener_closure();
+        let (_rx2, notice_closure_2) = create_listener_closure();
+        let (_node_1, beelay_1) = start_beelay_node(notice_closure_1).await.unwrap();
         let ticket = beelay_1.beelay_ticket().await.unwrap();
         let string_ticket = ticket.serialize();
-        let (_node_2, beelay_2) = start_beelay_node().await.unwrap();
-        beelay_2.connect_via_serialized_ticket(string_ticket).await.unwrap();
+        let (_node_2, beelay_2) = start_beelay_node(notice_closure_2).await.unwrap();
+        beelay_2
+            .connect_via_serialized_ticket(string_ticket)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -405,8 +430,10 @@ mod tests {
             .finish();
         // use that subscriber to process traces emitted after this point
         tracing::subscriber::set_global_default(subscriber).unwrap();
-        let (node_1, beelay_1) = start_beelay_node().await.unwrap();
-        let (node_2, beelay_2) = start_beelay_node().await.unwrap();
+        let (_rx1, notice_closure_1) = create_listener_closure();
+        let (_rx2, notice_closure_2) = create_listener_closure();
+        let (node_1, beelay_1) = start_beelay_node(notice_closure_1).await.unwrap();
+        let (node_2, beelay_2) = start_beelay_node(notice_closure_2).await.unwrap();
 
         let test_content = Vec::new();
         let (doc_result, _) = beelay_1

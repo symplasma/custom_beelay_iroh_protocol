@@ -3,11 +3,11 @@ use beelay_core::keyhive::{KeyhiveEntityId, MemberAccess};
 use beelay_core::{DocumentId, PeerId, StreamId};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::{NodeId, SecretKey};
-use rand::thread_rng;
-use std::fmt::Debug;
 use iroh_base::NodeAddr;
 use iroh_base::ticket::{Error, NodeTicket, Ticket};
+use rand::thread_rng;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 /// A wrapper for `ed25519_dalek::SigningKey` that provides compatability with `iroh::NodeId` and `beelay_core::PeerId`.
 /// Currently, this is used to merge identities for ease of use, but that will likely change and this will be used to generate separate IDs
@@ -170,7 +170,6 @@ impl StreamState {
     }
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BeelayTicket {
     node_ticket: NodeTicket,
@@ -191,7 +190,7 @@ impl BeelayTicket {
     pub fn contact_card(&self) -> &ContactCardWrapper {
         &self.beelay_contact
     }
-    
+
     pub fn into_components(self) -> (NodeTicket, ContactCardWrapper) {
         (self.node_ticket, self.beelay_contact)
     }
@@ -209,7 +208,9 @@ impl Ticket for BeelayTicket {
     }
 
     fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let len_bytes: [u8; 8] = bytes[0..8].try_into().map_err(|_| Error::Verify("invalid length"))?;
+        let len_bytes: [u8; 8] = bytes[0..8]
+            .try_into()
+            .map_err(|_| Error::Verify("invalid length"))?;
         let ticket_len = u64::from_be_bytes(len_bytes) as usize;
 
         // Extract the node ticket bytes
