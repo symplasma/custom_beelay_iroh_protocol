@@ -379,6 +379,7 @@ pub async fn start_beelay_node(event_listener: NoticeSubscriberClosure) -> Resul
         endpoint.clone(),
     )
     .await;
+    beelay_protocal.beelay_actor().subscribe_to_notices(event_listener).await;
     let router = iroh::protocol::Router::builder(endpoint)
         .accept(ALPN, beelay_protocal.clone()) // This makes the router handle incoming connections with our ALPN via Echo::accept!
         .spawn();
