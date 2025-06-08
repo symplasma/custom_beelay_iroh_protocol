@@ -41,7 +41,7 @@ impl<T: Debug> ActionResult<T> {
         }
     }
 
-    pub(crate) fn unpack(self) -> (T, Vec<Message>) {
+    pub fn unpack(self) -> (T, Vec<Message>) {
         (self.result, self.messages)
     }
     fn result(&self) -> &T {

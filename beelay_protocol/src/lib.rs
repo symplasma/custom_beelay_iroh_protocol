@@ -81,7 +81,7 @@ impl IrohBeelayProtocol {
         Ok(self.beelay_ticket().await?.serialize())
     }
 
-    pub async fn connect_via_serialized_ticket(&self, serialized_ticket: String) -> Result<DocumentId> {
+    pub async fn connect_via_serialized_ticket(&self, serialized_ticket: String) -> Result<(DocumentId, NodeTicket)> {
         let ticket = BeelayTicket::deserialize(&serialized_ticket)?;
         let (node_ticket, contact_card) = ticket.into_components();
 
@@ -103,10 +103,30 @@ impl IrohBeelayProtocol {
             .await
             .unpack();
 
-        self.dial_node_and_send_messages(node_ticket.into(), stream_messages)
+        self.dial_node_and_send_messages(node_ticket.clone().into(), stream_messages)
             .await?;
 
-        Ok(doc_id)
+        Ok((doc_id, node_ticket))
+    }
+    
+    pub async fn add_data_to_document(&self, data: Vec<u8>, doc_id: DocumentId, node_ticket: NodeTicket) -> Result<()> {
+        let (doc_status, _) = self.beelay_actor().doc_status(doc_id).await.unpack();
+        let local_heads = doc_status.local_heads.unwrap_or_default();
+        let data_hash = CommitHash::from(blake3::hash(&data).as_bytes());
+        let data_commit = Commit::new(
+            local_heads,
+            data,
+            data_hash,
+        );
+        let (result, stream_messages) = self
+            .beelay_actor()
+            .add_commits(doc_id, vec![data_commit])
+            .await
+            .unpack();
+        result?;
+        
+        self.dial_node_and_send_messages(node_ticket.into(), stream_messages).await?;
+        Ok(())
     }
 
     /// Returns a reference to the BeelayActor that handles protocol logic.
