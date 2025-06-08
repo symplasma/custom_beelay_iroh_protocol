@@ -18,6 +18,7 @@ use iroh_base::ticket::Ticket;
 use n0_future::boxed::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
+pub use iroh_base::NodeId;
 use tokio::sync::mpsc::Sender;
 use tracing::{Instrument, Level, info, span};
 
@@ -102,6 +103,10 @@ impl IrohBeelayProtocol {
     /// Returns a reference to the IROH endpoint used by this protocol instance.
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+    
+    pub fn node_id(&self) -> NodeId {
+        self.endpoint.node_id()
     }
 
     pub async fn node_addr(&self) -> Result<NodeAddr> {
