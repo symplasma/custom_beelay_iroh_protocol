@@ -278,7 +278,13 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                 }
             }
             for (doc_id, events) in results.notifications.into_iter() {
-                self.notifications.entry(doc_id).or_default().extend(events);
+                let events_list = self.notifications.entry(doc_id).or_default();
+                // ensure we don't add duplicate events, we can't use HashSet because DocEvent doesn't implement Hash
+                for event in events {
+                    if !events_list.contains(&event) {
+                        events_list.push(event);
+                    }
+                }
             }
             for (peer_id, status) in results.peer_status_changes.into_iter() {
                 self.peer_changes.entry(peer_id).or_default().push(status);
