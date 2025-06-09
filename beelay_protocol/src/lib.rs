@@ -13,12 +13,12 @@ pub use beelay_core::{Commit, CommitHash, CommitOrBundle, DocumentId};
 use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, VarInt};
 pub use iroh::{Endpoint, protocol::Router};
 use iroh::{NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
+pub use iroh_base::NodeId;
 pub use iroh_base::ticket::NodeTicket;
 use iroh_base::ticket::Ticket;
 use n0_future::boxed::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
-pub use iroh_base::NodeId;
 use tokio::sync::mpsc::Sender;
 use tracing::{Instrument, Level, info, span};
 
@@ -104,7 +104,7 @@ impl IrohBeelayProtocol {
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
-    
+
     pub fn node_id(&self) -> NodeId {
         self.endpoint.node_id()
     }
@@ -181,7 +181,7 @@ impl IrohBeelayProtocol {
             .await
             .unpack();
         result?;
-        
+
         let target_peer = node_ticket.node_addr().node_id.public().into();
 
         let (_, stream_messages) = self
@@ -225,6 +225,20 @@ impl IrohBeelayProtocol {
             .remote_info(node_id)
             .expect("Failed to get remote info from what should be a complete connection");
         info!("connection type: {:?}", info.conn_type);
+
+        // send connection info to listener if it exists
+        if let Some(listener) = &self.listener {
+            let node_addr = NodeAddr::from_parts(
+                node_id,
+                info.relay_url.and_then(|r| Some(r.relay_url)),
+                info.addrs.into_iter().map(|a| a.addr),
+            );
+            let node_ticket = NodeTicket::new(node_addr);
+            let connection_type = info.conn_type;
+            let iroh_event = IrohEvent::new(node_ticket, connection_type.into());
+            listener.send(iroh_event).await?;
+        }
+
         let (mut send, mut recv) = conn.open_bi().await?;
         self.send_messages(messages, &mut send, &mut recv).await?;
         send.finish()?;
