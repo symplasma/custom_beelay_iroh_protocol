@@ -175,12 +175,20 @@ impl IrohBeelayProtocol {
         let local_heads = doc_status.local_heads.unwrap_or_default();
         let data_hash = CommitHash::from(blake3::hash(&data).as_bytes());
         let data_commit = Commit::new(local_heads, data, data_hash);
-        let (result, stream_messages) = self
+        let (result, _) = self
             .beelay_actor()
             .add_commits(doc_id, vec![data_commit])
             .await
             .unpack();
         result?;
+        
+        let target_peer = node_ticket.node_addr().node_id.public().into();
+
+        let (_, stream_messages) = self
+            .beelay_actor()
+            .create_stream(target_peer)
+            .await
+            .unpack();
 
         self.dial_node_and_send_messages(node_ticket.into(), stream_messages)
             .await?;
