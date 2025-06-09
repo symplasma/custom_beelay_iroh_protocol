@@ -630,10 +630,12 @@ impl<R: rand::Rng + rand::CryptoRng + Clone + 'static> BeelayWrapper<R> {
                     reply.send(action_result).expect("send failed for action");
                 }
             }
-            for (doc_id, events) in self.pop_notifications() {
-                for event in events {
-                    for subscriber in self.notification_subscribers.iter() {
-                        subscriber(doc_id, event.clone()).await;
+            if !self.notification_subscribers.is_empty() {
+                for (doc_id, events) in self.pop_notifications() {
+                    for event in events {
+                        for subscriber in self.notification_subscribers.iter() {
+                            subscriber(doc_id, event.clone()).await;
+                        }
                     }
                 }
             }

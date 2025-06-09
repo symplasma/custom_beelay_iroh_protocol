@@ -283,7 +283,7 @@ impl BeelayActor {
             .expect("Failed to get response from sent message")
     }
 
-    pub async fn display_storage(&self) {
+    pub async fn display_values(&self) {
         let (sender, receiver) = oneshot::channel();
         self.send_channel
             .send(BeelayAction::DisplayValues(sender))
