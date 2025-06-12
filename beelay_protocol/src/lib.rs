@@ -1,7 +1,7 @@
 mod actor;
 mod beelay;
 mod messages;
-mod primitives;
+pub mod primitives;
 mod storage_handling;
 
 // todo: clean up re-exported types so we don't need to reexport so much from Iroh and beelay,
@@ -16,7 +16,7 @@ use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, 
 pub use iroh::{Endpoint, protocol::Router};
 use iroh::{NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 pub use iroh_base::NodeId;
-pub use iroh_base::ticket::NodeTicket;
+pub use iroh_base::ticket::{NodeTicket, Ticket};
 use n0_future::boxed::BoxFuture;
 use primitives::IrohEvent;
 use std::collections::HashMap;
@@ -486,10 +486,7 @@ mod tests {
         let (_node_1, beelay_1) = start_beelay_node(notice_closure_1, None).await.unwrap();
         let ticket = beelay_1.beelay_ticket().await.unwrap();
         let (_node_2, beelay_2) = start_beelay_node(notice_closure_2, None).await.unwrap();
-        beelay_2
-            .connect_via_beelay_ticket(ticket)
-            .await
-            .unwrap();
+        beelay_2.connect_via_beelay_ticket(ticket).await.unwrap();
     }
 
     #[tokio::test]

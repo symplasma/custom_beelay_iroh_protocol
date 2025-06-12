@@ -804,7 +804,6 @@ mod tests {
     #[tokio::test]
     async fn test_notifications() {
         // todo: setup asserts for this test.  It was originally written to isolate duplicate notification events.
-        
         let actor1 = spawn_beelay_actor().await;
         let actor2 = spawn_beelay_actor().await;
 
