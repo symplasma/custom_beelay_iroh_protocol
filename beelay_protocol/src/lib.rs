@@ -229,7 +229,8 @@ impl IrohBeelayProtocol {
             .create_stream(target_peer)
             .await
             .unpack();
-
+        
+        // todo: generally speaking, we need to implement disconnect on all of these streams, see other todos for additional details.
         self.dial_node_and_send_messages(node_ticket.into(), stream_messages)
             .await?;
         Ok(())
