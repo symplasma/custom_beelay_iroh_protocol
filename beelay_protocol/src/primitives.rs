@@ -170,6 +170,7 @@ impl StreamState {
     }
 }
 
+/// ticket that contains a node ticket and a beelay contact card for sharing with other nodes
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BeelayTicket {
     node_ticket: NodeTicket,
@@ -229,6 +230,7 @@ impl Ticket for BeelayTicket {
     }
 }
 
+/// Simplification of iroh::endpoint::ConnectionType for sharing with listening services
 #[derive(Debug)]
 pub enum ConnectionType {
     Direct,
@@ -248,6 +250,7 @@ impl From<iroh::endpoint::ConnectionType> for ConnectionType {
     }
 }
 
+/// Used to share iroh connection information details to the node being called, sent to a listening service
 #[derive(Debug)]
 pub struct IrohEvent {
     node_ticket: NodeTicket,
