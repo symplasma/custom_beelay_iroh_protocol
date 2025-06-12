@@ -4,6 +4,8 @@ mod messages;
 mod primitives;
 mod storage_handling;
 
+// todo: clean up re-exported types so we don't need to reexport so much from Iroh and beelay,
+//  also organize these since it is mess right now
 pub use crate::actor::NoticeSubscriberClosure;
 use crate::primitives::{BeelayTicket, ContactCardWrapper, KeyhiveEntityIdWrapper};
 use anyhow::Result;
@@ -15,8 +17,8 @@ pub use iroh::{Endpoint, protocol::Router};
 use iroh::{NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 pub use iroh_base::NodeId;
 pub use iroh_base::ticket::NodeTicket;
-use iroh_base::ticket::Ticket;
 use n0_future::boxed::BoxFuture;
+use primitives::IrohEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -24,51 +26,6 @@ use tracing::{Instrument, Level, info, span};
 
 /// Application-Layer Protocol Negotiation (ALPN) identifier for the beelay protocol version 1.
 pub const ALPN: &[u8] = b"beelay/1";
-
-#[derive(Debug)]
-pub enum ConnectionType {
-    Direct,
-    Relay,
-    Mixed,
-    None,
-}
-
-impl From<iroh::endpoint::ConnectionType> for ConnectionType {
-    fn from(ct: iroh::endpoint::ConnectionType) -> Self {
-        match ct {
-            iroh::endpoint::ConnectionType::Direct(_) => ConnectionType::Direct,
-            iroh::endpoint::ConnectionType::Relay(_) => ConnectionType::Relay,
-            iroh::endpoint::ConnectionType::Mixed(_, _) => ConnectionType::Mixed,
-            iroh::endpoint::ConnectionType::None => ConnectionType::None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct IrohEvent {
-    node_ticket: NodeTicket,
-    connection_type: ConnectionType,
-}
-
-impl IrohEvent {
-    pub fn new(node_ticket: NodeTicket, connection_type: ConnectionType) -> Self {
-        Self {
-            node_ticket,
-            connection_type,
-        }
-    }
-
-    pub fn node_ticket(&self) -> &NodeTicket {
-        &self.node_ticket
-    }
-    pub fn connection_type(&self) -> &ConnectionType {
-        &self.connection_type
-    }
-
-    pub fn unpack(self) -> (NodeTicket, ConnectionType) {
-        (self.node_ticket, self.connection_type)
-    }
-}
 
 /// Main protocol handler for the Beelay network protocol implementation over IROH.
 /// Manages connections, message handling, and protocol-specific operations.
@@ -109,37 +66,38 @@ impl IrohBeelayProtocol {
         self.endpoint.node_id()
     }
 
+    /// Contains context to dial a given node including node id, relay info, and addresses
     pub async fn node_addr(&self) -> Result<NodeAddr> {
         self.endpoint.node_addr().await
     }
 
+    /// Serializable ticket providing node dialing context
     pub async fn node_ticket(&self) -> Result<NodeTicket> {
         let node_addr = self.node_addr().await?;
         let ticket = NodeTicket::new(node_addr);
         Ok(ticket)
     }
 
+    /// Beelay representation of a "node/entity"
+    /// This is a serializable wrapper
     pub async fn contact_card(&self) -> Result<ContactCardWrapper> {
         let (contact_card, _) = self.beelay_actor().create_contact_card().await.unpack();
         Ok(contact_card?)
     }
 
+    /// represents a combined and serializable ticket for node and contact card
+    /// This can be serialized to an ascii string
     pub async fn beelay_ticket(&self) -> Result<BeelayTicket> {
         let contact_card = self.contact_card().await?;
         let node_ticket = self.node_ticket().await?;
         Ok(BeelayTicket::new(node_ticket, contact_card))
     }
 
-    pub async fn string_beelay_ticket(&self) -> Result<String> {
-        Ok(self.beelay_ticket().await?.serialize())
-    }
-
-    pub async fn connect_via_serialized_ticket(
+    pub async fn connect_via_beelay_ticket(
         &self,
-        serialized_ticket: String,
+        beelay_ticket: BeelayTicket,
     ) -> Result<(DocumentId, NodeTicket)> {
-        let ticket = BeelayTicket::deserialize(&serialized_ticket)?;
-        let (node_ticket, contact_card) = ticket.into_components();
+        let (node_ticket, contact_card) = beelay_ticket.into_components();
 
         // Create document for exchange of messages, using contact card to facilitate communication in the beelay state machine
         let entity_id = KeyhiveEntityIdWrapper::Individual(contact_card.clone());
@@ -527,10 +485,9 @@ mod tests {
         let (_rx2, notice_closure_2) = create_listener_closure();
         let (_node_1, beelay_1) = start_beelay_node(notice_closure_1, None).await.unwrap();
         let ticket = beelay_1.beelay_ticket().await.unwrap();
-        let string_ticket = ticket.serialize();
         let (_node_2, beelay_2) = start_beelay_node(notice_closure_2, None).await.unwrap();
         beelay_2
-            .connect_via_serialized_ticket(string_ticket)
+            .connect_via_beelay_ticket(ticket)
             .await
             .unwrap();
     }

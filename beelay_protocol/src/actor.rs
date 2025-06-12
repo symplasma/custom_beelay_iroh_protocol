@@ -19,14 +19,6 @@ use tokio::sync::{mpsc, oneshot};
 pub type NoticeSubscriberClosure =
     Box<dyn Fn(DocumentId, DocEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-pub fn make_async_notice_closure<F, Fut>(f: F) -> NoticeSubscriberClosure
-where
-    F: Fn(DocumentId, DocEvent) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    Box::new(move |doc_id, event| Box::pin(f(doc_id, event)))
-}
-
 #[derive(Debug)]
 pub struct ActionResult<T: Debug> {
     messages: Vec<Message>,
@@ -715,7 +707,7 @@ mod tests {
         while let Some((current_receiver, current_sender, message)) = message_queue.pop_front() {
             let (tx, rx) = oneshot::channel();
             let sendable_message = BeelayAction::SendMessage(tx, message);
-            // println!("Sending message: {:?} {:?}", current_sender.peer_id(), sendable_message);
+
             current_receiver
                 .send_channel
                 .send(sendable_message)
@@ -807,6 +799,99 @@ mod tests {
         let (doc_id, event) = rx.recv().await.expect("Failed to receive notice");
         assert_eq!(event, DocEvent::Discovered);
         assert_eq!(doc_id, document_id);
+    }
+
+    #[tokio::test]
+    async fn test_notifications() {
+        // todo: setup asserts for this test.  It was originally written to isolate duplicate notification events.
+        
+        let actor1 = spawn_beelay_actor().await;
+        let actor2 = spawn_beelay_actor().await;
+
+        let (tx1, mut rx1) = mpsc::channel(100);
+
+        // Note: this is a messy bit of code since types cannot implement impl traits and we need.
+        let notice_closure1: NoticeSubscriberClosure =
+            Box::new(move |doc_id: DocumentId, event: DocEvent| {
+                let tx = tx1.clone();
+                Box::pin(async move {
+                    // println!("Notice closure called: {}, {:?}", doc_id, event);
+                    let send_result = tx.send((doc_id, event)).await;
+                    // throw out results for now...
+                    match send_result {
+                        Ok(_) => {}
+                        Err(_) => {}
+                    }
+                })
+            });
+
+        actor1.subscribe_to_notices(notice_closure1).await;
+
+        let (tx2, mut rx2) = mpsc::channel(100);
+
+        // Note: this is a messy bit of code since types cannot implement impl traits and we need.
+        let notice_closure2: NoticeSubscriberClosure =
+            Box::new(move |doc_id: DocumentId, event: DocEvent| {
+                let tx = tx2.clone();
+                Box::pin(async move {
+                    // println!("Notice closure called: {}, {:?}", doc_id, event);
+                    let send_result = tx.send((doc_id, event)).await;
+                    // throw out results for now...
+                    match send_result {
+                        Ok(_) => {}
+                        Err(_) => {}
+                    }
+                })
+            });
+        actor2.subscribe_to_notices(notice_closure2).await;
+
+        let (contact_card2_result, _) = actor2.create_contact_card().await.unpack();
+        let contact_card2 = contact_card2_result.expect("Failed to create contact card for actor2");
+        let entity_id = KeyhiveEntityIdWrapper::Individual(contact_card2);
+
+        let (doc_result, _) = actor1.create_doc(vec![], vec![entity_id]).await.unpack();
+        let (document_id, _initial_commit) = doc_result.expect("Failed to create document");
+
+        // set up stream to synchronize
+        let target_peer_id = actor2.peer_id();
+        let (stream_id, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+
+        // Set up communication between actors for syncing
+        process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+
+        let data = vec![1, 2, 3];
+        let (doc_status, _) = actor1.doc_status(document_id).await.unpack();
+        let local_heads = doc_status.local_heads.unwrap_or_default();
+        println!("Local heads: {:?}", local_heads);
+        let data_hash = CommitHash::from(blake3::hash(&data).as_bytes());
+        let data_commit = Commit::new(local_heads, data, data_hash);
+
+        let (add_commits_result, _) = actor1
+            .add_commits(document_id, vec![data_commit.clone()])
+            .await
+            .unpack();
+        add_commits_result.expect("Failed to add first test commit");
+
+        // set up stream to synchronize
+        let target_peer_id = actor2.peer_id();
+        let (stream_id, stream_messages) = actor1.create_stream(target_peer_id).await.unpack();
+
+        // Set up communication between actors for syncing
+        process_actor_messages_between_2_actors(&actor1, &actor2, stream_messages).await;
+
+        // check notifications
+        let mut actor1_notices = Vec::new();
+        let returns1 = rx1.recv_many(&mut actor1_notices, 50).await;
+
+        println!("actor1: len: {} values: {:#?}", returns1, actor1_notices);
+
+        let mut actor2_notices = Vec::new();
+        let returns2 = rx2.recv_many(&mut actor2_notices, 50).await;
+
+        println!("actor2: len: {} values: {:#?}", returns2, actor2_notices);
+        // actor1.display_values().await;
+        // println!("----------------------------------");
+        // actor2.display_values().await;
     }
 
     #[tokio::test]

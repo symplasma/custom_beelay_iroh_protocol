@@ -228,3 +228,48 @@ impl Ticket for BeelayTicket {
         })
     }
 }
+
+#[derive(Debug)]
+pub enum ConnectionType {
+    Direct,
+    Relay,
+    Mixed,
+    None,
+}
+
+impl From<iroh::endpoint::ConnectionType> for ConnectionType {
+    fn from(ct: iroh::endpoint::ConnectionType) -> Self {
+        match ct {
+            iroh::endpoint::ConnectionType::Direct(_) => ConnectionType::Direct,
+            iroh::endpoint::ConnectionType::Relay(_) => ConnectionType::Relay,
+            iroh::endpoint::ConnectionType::Mixed(_, _) => ConnectionType::Mixed,
+            iroh::endpoint::ConnectionType::None => ConnectionType::None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct IrohEvent {
+    node_ticket: NodeTicket,
+    connection_type: ConnectionType,
+}
+
+impl IrohEvent {
+    pub fn new(node_ticket: NodeTicket, connection_type: ConnectionType) -> Self {
+        Self {
+            node_ticket,
+            connection_type,
+        }
+    }
+
+    pub fn node_ticket(&self) -> &NodeTicket {
+        &self.node_ticket
+    }
+    pub fn connection_type(&self) -> &ConnectionType {
+        &self.connection_type
+    }
+
+    pub fn unpack(self) -> (NodeTicket, ConnectionType) {
+        (self.node_ticket, self.connection_type)
+    }
+}
