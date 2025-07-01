@@ -4,7 +4,7 @@ use beelay_core::{DocumentId, PeerId, StreamId};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use iroh::{NodeId, SecretKey};
 use iroh_base::NodeAddr;
-use iroh_base::ticket::{Error, NodeTicket, Ticket};
+use iroh_base::ticket::{NodeTicket, ParseError, Ticket};
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -208,10 +208,10 @@ impl Ticket for BeelayTicket {
         buff
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
         let len_bytes: [u8; 8] = bytes[0..8]
             .try_into()
-            .map_err(|_| Error::Verify("invalid length"))?;
+            .map_err(|_| ParseError::verification_failed("invalid length"))?;
         let ticket_len = u64::from_be_bytes(len_bytes) as usize;
 
         // Extract the node ticket bytes
@@ -221,7 +221,7 @@ impl Ticket for BeelayTicket {
         // Extract the remaining bytes for the beelay contact
         let contact_bytes = &bytes[8 + ticket_len..];
         let beelay_contact = ContactCardWrapper::from_bytes(contact_bytes)
-            .map_err(|_| Error::Verify("invalid beelay contact"))?;
+            .map_err(|_| ParseError::verification_failed("invalid beelay contact"))?;
 
         Ok(Self {
             node_ticket,

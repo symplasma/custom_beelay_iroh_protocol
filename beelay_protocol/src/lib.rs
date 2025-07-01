@@ -1,3 +1,4 @@
+use iroh::Watcher;
 mod actor;
 mod beelay;
 mod messages;
@@ -8,16 +9,16 @@ mod storage_handling;
 //  also organize these since it is mess right now
 pub use crate::actor::NoticeSubscriberClosure;
 use crate::primitives::{BeelayTicket, ContactCardWrapper, KeyhiveEntityIdWrapper};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use beelay_core::contact_card::ContactCard;
 pub use beelay_core::doc_status::DocEvent;
 pub use beelay_core::{Commit, CommitHash, CommitOrBundle, DocumentId};
 use iroh::endpoint::{ApplicationClose, ConnectionError, RecvStream, SendStream, VarInt};
+use iroh::protocol::AcceptError;
 pub use iroh::{Endpoint, protocol::Router};
 use iroh::{NodeAddr, endpoint::Connection, protocol::ProtocolHandler};
 pub use iroh_base::NodeId;
 pub use iroh_base::ticket::{NodeTicket, Ticket};
-use n0_future::boxed::BoxFuture;
 use primitives::IrohEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,13 +68,16 @@ impl IrohBeelayProtocol {
     }
 
     /// Contains context to dial a given node including node id, relay info, and addresses
-    pub async fn node_addr(&self) -> Result<NodeAddr> {
-        self.endpoint.node_addr().await
+    pub fn node_addr(&self) -> Result<NodeAddr> {
+        self.endpoint
+            .node_addr()
+            .get()?
+            .ok_or_else(|| anyhow!("Expected a value"))
     }
 
     /// Serializable ticket providing node dialing context
-    pub async fn node_ticket(&self) -> Result<NodeTicket> {
-        let node_addr = self.node_addr().await?;
+    pub fn node_ticket(&self) -> Result<NodeTicket> {
+        let node_addr = self.node_addr()?;
         let ticket = NodeTicket::new(node_addr);
         Ok(ticket)
     }
@@ -89,7 +93,7 @@ impl IrohBeelayProtocol {
     /// This can be serialized to an ascii string
     pub async fn beelay_ticket(&self) -> Result<BeelayTicket> {
         let contact_card = self.contact_card().await?;
-        let node_ticket = self.node_ticket().await?;
+        let node_ticket = self.node_ticket()?;
         Ok(BeelayTicket::new(node_ticket, contact_card))
     }
 
@@ -229,7 +233,7 @@ impl IrohBeelayProtocol {
             .create_stream(target_peer)
             .await
             .unpack();
-        
+
         // todo: generally speaking, we need to implement disconnect on all of these streams, see other todos for additional details.
         self.dial_node_and_send_messages(node_ticket.into(), stream_messages)
             .await?;
@@ -395,7 +399,12 @@ impl ProtocolHandler for IrohBeelayProtocol {
     ///
     /// # Returns
     /// BoxFuture containing Result of connection handling
-    fn accept(&self, connection: Connection) -> BoxFuture<Result<()>> {
+    fn accept(
+        &self,
+        connection: Connection,
+    ) -> impl Future<Output = std::result::Result<(), AcceptError>> + Send {
+        // TODO: with the update to the canary series of iroh, the error handling has gotten messy, 
+        //  let's clean this up once we have settled on an error structure
         let beelay_protocol = self.clone();
         let source_peer_id = beelay_protocol.beelay_actor.peer_id();
         let this_node_id = beelay_protocol.endpoint.node_id();
@@ -419,7 +428,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                 let node_ticket = NodeTicket::new(node_addr);
                 let connection_type = info.conn_type;
                 let iroh_event = IrohEvent::new(node_ticket, connection_type.into());
-                listener.send(iroh_event).await?
+                listener.send(iroh_event).await.map_err(|e| AcceptError::from_err(e))?
             }
             let (mut send, mut recv) = connection.accept_bi().await?;
             loop {
@@ -446,7 +455,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             if key == node_id {
                                 info!("sending messages to connected node");
                                 for msg in group {
-                                    Self::send_msg(msg, &mut send).await?;
+                                    Self::send_msg(msg, &mut send).await.map_err(|e| AcceptError::from_err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
                                 }
                             } else {
                                 info!(name: "sending messages to other node", node_id=%key.to_string());
@@ -468,11 +477,11 @@ impl ProtocolHandler for IrohBeelayProtocol {
                             },
                             &mut send,
                         )
-                            .await?;
+                            .await.map_err(|e| AcceptError::from_err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
                         info!("joining {} handles", handles.len());
                         for h in handles {
                             // not ideal for the time being, but this allows us to propagate up errors to the calling function
-                            h.await??;
+                            h.await.map_err(|e| AcceptError::from_err(e))?.map_err(|e| AcceptError::from_err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
                         }
                     }
                     Err(e) => {
@@ -488,7 +497,7 @@ impl ProtocolHandler for IrohBeelayProtocol {
                         send.finish()?;
                         connection.closed().await;
                         info!("successfully closed connection");
-                        return close_result;
+                        return close_result.map_err(|e| AcceptError::from_err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
                     }
                 }
             }
@@ -634,7 +643,7 @@ mod tests {
             "Expected outgoing messages from stream creation"
         );
 
-        let node_addr_2 = node_2.endpoint().node_addr().await.unwrap();
+        let node_addr_2 = node_2.endpoint().node_addr().get().unwrap().unwrap();
         beelay_1
             .dial_node_and_send_messages(node_addr_2, stream_messages)
             .await
@@ -670,7 +679,7 @@ mod tests {
 
         assert!(!new_messages.is_empty());
 
-        let node_addr_2 = node_2.endpoint().node_addr().await.unwrap();
+        let node_addr_2 = node_2.endpoint().node_addr().get().unwrap().unwrap();
         beelay_1
             .dial_node_and_send_messages(node_addr_2, new_messages)
             .await
